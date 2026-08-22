@@ -1,0 +1,22 @@
+{
+  "id": "ai_agents",
+  "name": "AI Agents Website Tester",
+  "version": "1.0.0",
+  "description": "Runs the deterministic Playwright website testing and reporting pipeline.",
+  "entrypoint": "packages.ai_agents.runner:run_package",
+  "enabled": true,
+  "timeout_seconds": 900,
+  "required_inputs": [
+    {"name": "website_url", "type": "string", "format": "url", "description": "Login URL of the site under test."},
+    {"name": "username", "type": "string", "description": "Run-scoped test account username."},
+    {"name": "password", "type": "string", "secret": true, "description": "Run-scoped test account password."},
+    {"name": "routes", "type": "array", "description": "Absolute application paths to test."}
+  ],
+  "optional_inputs": [
+    {"name": "primary_user_role", "type": "string"},
+    {"name": "anthropic_api_key", "type": "string", "secret": true},
+    {"name": "role_test_users", "type": "string", "secret": true},
+    {"name": "extra_role_users", "type": "string", "secret": true},
+    {"name": "headless", "type": "boolean"}
+  ]
+}

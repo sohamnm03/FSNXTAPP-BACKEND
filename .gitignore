@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.env
+.venv/
+venv/
+.pytest_cache/
+packages/*/runtime/*
+!packages/*/runtime/.gitkeep
+site_test_report.html
+site_test_report.json
+pipeline_checkpoint.json
+test_screenshots/
+_archive_review/

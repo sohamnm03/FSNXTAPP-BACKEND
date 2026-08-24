@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from ai_agents import config
 from ai_agents.services.auth_service import (
+    _first_usable,
     normalise_role,
     parse_role_test_users,
     role_capabilities,
@@ -37,6 +38,43 @@ class RoleMatrixTests(unittest.TestCase):
         self.assertEqual(parsed[0], ("FOURTHSIGNAL", "fs", "pw"))
         self.assertEqual(parsed[1], ("MAKER", "maker", "pw:with:colon"))
         self.assertEqual(parsed[2], ("CHECKER", "check", "pw"))
+
+
+class GenericLoginLocatorTests(unittest.TestCase):
+    class Candidate:
+        def __init__(self, visible=True, enabled=True):
+            self.visible = visible
+            self.enabled = enabled
+
+        def is_visible(self):
+            return self.visible
+
+        def is_enabled(self):
+            return self.enabled
+
+    class Matches:
+        def __init__(self, candidates):
+            self.candidates = candidates
+
+        def count(self):
+            return len(self.candidates)
+
+        def nth(self, index):
+            return self.candidates[index]
+
+    class Page:
+        def __init__(self, matches):
+            self.matches = matches
+
+        def locator(self, selector):
+            return GenericLoginLocatorTests.Matches(self.matches.get(selector, []))
+
+    def test_first_usable_skips_hidden_and_disabled_candidates(self):
+        hidden = self.Candidate(visible=False)
+        disabled = self.Candidate(enabled=False)
+        usable = self.Candidate()
+        page = self.Page({"first": [hidden, disabled], "second": [usable]})
+        self.assertIs(_first_usable(page, ("first", "second")), usable)
 
 
 class RouteRecoveryTests(unittest.TestCase):

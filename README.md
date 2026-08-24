@@ -38,6 +38,10 @@ curl -X POST -H "Authorization: Bearer ACCESS_TOKEN" \
   http://localhost:5000/api/ai-agents/runs
 ```
 
+`routes` is optional. Omit it (or pass an empty array) to run only the generic
+Playwright login check against the supplied URL. Add absolute paths such as
+`["/dashboard"]` when the target uses the application's full route-testing flow.
+
 ```bash
 curl -H "Authorization: Bearer ACCESS_TOKEN" http://localhost:5000/api/ai-agents/runs/RUN_ID
 curl -H "Authorization: Bearer ACCESS_TOKEN" http://localhost:5000/api/ai-agents/runs/RUN_ID/logs

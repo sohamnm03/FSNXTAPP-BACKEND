@@ -9,10 +9,10 @@
   "required_inputs": [
     {"name": "website_url", "type": "string", "format": "url", "description": "Login URL of the site under test."},
     {"name": "username", "type": "string", "description": "Run-scoped test account username."},
-    {"name": "password", "type": "string", "secret": true, "description": "Run-scoped test account password."},
-    {"name": "routes", "type": "array", "description": "Absolute application paths to test."}
+    {"name": "password", "type": "string", "secret": true, "description": "Run-scoped test account password."}
   ],
   "optional_inputs": [
+    {"name": "routes", "type": "array", "description": "Optional absolute application paths to test. Omit or pass an empty list for a login-only check."},
     {"name": "primary_user_role", "type": "string"},
     {"name": "anthropic_api_key", "type": "string", "secret": true},
     {"name": "role_test_users", "type": "string", "secret": true},

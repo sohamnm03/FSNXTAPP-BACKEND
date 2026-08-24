@@ -74,6 +74,7 @@ FORM_CASES_PER_FIELD = _int("FORM_CASES_PER_FIELD", 3)
 
 # Comma-separated paths to test without being prompted.
 TEST_ROUTES = os.environ.get("TEST_ROUTES", "").strip()
+LOGIN_ONLY = False
 # Automation runs must never pause at an input prompt. Enable this only when a
 # human intentionally wants to choose routes from the terminal.
 INTERACTIVE_ROUTE_SELECTION = _bool("INTERACTIVE_ROUTE_SELECTION", "0")
@@ -162,7 +163,7 @@ BENIGN_REQUEST_STATUSES = {401, 403, 499}
 
 def configure(inputs: dict, output_dir=None, backend_mode=False) -> None:
     """Apply run-scoped inputs inside the already isolated worker process."""
-    global URL, LOGIN_USER_ID, LOGIN_PASSWORD, PRIMARY_USER_ROLE, TEST_ROUTES
+    global URL, LOGIN_USER_ID, LOGIN_PASSWORD, PRIMARY_USER_ROLE, TEST_ROUTES, LOGIN_ONLY
     global HEADLESS, ALLOW_DESTRUCTIVE, INTERACTIVE_ROUTE_SELECTION
     global HTML_REPORT_PATH, JSON_REPORT_PATH, SCREENSHOT_DIR, CHECKPOINT_PATH
     global ANTHROPIC_API_KEY, ROLE_TEST_USERS, EXTRA_ROLE_USERS
@@ -173,6 +174,7 @@ def configure(inputs: dict, output_dir=None, backend_mode=False) -> None:
     PRIMARY_USER_ROLE = str(inputs.get("primary_user_role", PRIMARY_USER_ROLE)).strip().upper()
     routes = inputs.get("routes", [])
     TEST_ROUTES = ",".join(routes) if isinstance(routes, list) else str(routes)
+    LOGIN_ONLY = isinstance(routes, list) and not routes
     ANTHROPIC_API_KEY = str(inputs.get("anthropic_api_key", ""))
     ROLE_TEST_USERS = str(inputs.get("role_test_users", ""))
     EXTRA_ROLE_USERS = str(inputs.get("extra_role_users", ""))

@@ -23,6 +23,13 @@ def test_input_validation(client, auth, inputs):
     assert client.post("/api/ai-agents/runs", headers=auth, json={"inputs": bad}).status_code == 400
 
 
+def test_routes_are_optional_for_login_only_run(client, auth, inputs):
+    login_only = {key: value for key, value in inputs.items() if key != "routes"}
+    response = client.post("/api/ai-agents/runs", headers=auth, json={"inputs": login_only})
+    assert response.status_code == 202
+    assert wait_for(client, auth, response.get_json()["run_id"])["status"] == "completed"
+
+
 def test_complete_run_logs_artifacts_and_redaction(client, auth, inputs):
     response = client.post("/api/ai-agents/runs", headers=auth, json={"inputs": inputs})
     assert response.status_code == 202

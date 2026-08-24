@@ -26,10 +26,9 @@ def app(tmp_path):
         "entrypoint": "packages.ai_agents.runner:run_package", "enabled": True, "timeout_seconds": 1,
         "required_inputs": [
             {"name": "website_url", "type": "string", "format": "url"},
-            {"name": "username", "type": "string"}, {"name": "password", "type": "string"},
-            {"name": "routes", "type": "array"}
+            {"name": "username", "type": "string"}, {"name": "password", "type": "string"}
         ],
-        "optional_inputs": [{"name": "mode", "type": "string"}],
+        "optional_inputs": [{"name": "routes", "type": "array"}, {"name": "mode", "type": "string"}],
     }
     (package / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return create_app({

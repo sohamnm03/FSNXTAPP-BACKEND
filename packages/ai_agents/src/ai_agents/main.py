@@ -182,6 +182,15 @@ def main(inputs=None, output_dir=None, backend_mode=False):
             )
             start_url = primary_page.url
 
+            if config.LOGIN_ONLY:
+                print("Login-only check completed; no application routes were supplied.", flush=True)
+                REPORTER.update_run_state(
+                    status="completed",
+                    current_stage="complete",
+                    current_case="",
+                )
+                return
+
             def route_stage():
                 discovered = discover_routes(primary_page, context, start_url)
                 routes = configured_routes(discovered, start_url)

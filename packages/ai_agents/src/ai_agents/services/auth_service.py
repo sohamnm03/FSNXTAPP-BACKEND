@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import time
 from urllib.parse import urlparse
 
 from ai_agents import config
@@ -28,6 +29,121 @@ _CREATE_RE = re.compile(r"\bcreate\s+facility\b|\bnew\s+facility\b|\badd\s+facil
 _APPROVE_RE = re.compile(r"^\s*approve\s*$|\bapprove\s+facility\b", re.I)
 _PENDING_RE = re.compile(r"\bpending\b", re.I)
 _EMPTY_RE = re.compile(r"no\s+(pending\s+)?facilit|no\s+records|nothing\s+to\s+approve|empty", re.I)
+
+_USERNAME_SELECTORS = (
+    "input[autocomplete='username']",
+    "input[autocomplete='email']",
+    "input[type='email']",
+    "input[name*='email' i]",
+    "input[id*='email' i]",
+    "input[name*='user' i]",
+    "input[id*='user' i]",
+    "input[name*='login' i]",
+    "input[id*='login' i]",
+    "input[type='text']",
+    "input:not([type])",
+)
+_PASSWORD_SELECTORS = (
+    "input[autocomplete='current-password']",
+    "input[type='password']",
+    "input[name*='password' i]",
+    "input[id*='password' i]",
+    "input[name*='pass' i]",
+    "input[id*='pass' i]",
+)
+_SUBMIT_SELECTORS = (
+    "button:has-text('Log in')",
+    "button:has-text('Login')",
+    "button:has-text('Sign in')",
+    "button:has-text('Continue')",
+    "button:has-text('Next')",
+    "[role='button']:has-text('Log in')",
+    "[role='button']:has-text('Sign in')",
+    "button[type='submit']",
+    "input[type='submit']",
+)
+_ERROR_SELECTOR = (
+    "[role='alert'], [aria-live='assertive'], .error, .alert-danger, "
+    "[class*='error' i], [data-testid*='error' i]"
+)
+_MFA_SELECTORS = (
+    "input[autocomplete='one-time-code']",
+    "input[name*='otp' i]",
+    "input[id*='otp' i]",
+    "input[name*='verification' i]",
+    "input[id*='verification' i]",
+)
+
+
+def _first_usable(page, selectors):
+    """Return the first visible, enabled locator from an ordered selector list."""
+    for selector in selectors:
+        try:
+            matches = page.locator(selector)
+            for index in range(min(matches.count(), 20)):
+                candidate = matches.nth(index)
+                if candidate.is_visible() and candidate.is_enabled():
+                    return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _wait_for_usable(page, selectors, description):
+    deadline = time.monotonic() + (config.PAGE_TIMEOUT_MS / 1000)
+    while time.monotonic() < deadline:
+        candidate = _first_usable(page, selectors)
+        if candidate is not None:
+            return candidate
+        page.wait_for_timeout(100)
+    raise RuntimeError(f"No visible {description} field was found")
+
+
+def _click_login_action(page):
+    action = _first_usable(page, _SUBMIT_SELECTORS)
+    if action is None:
+        raise RuntimeError("No visible login, sign-in, continue, or submit button was found")
+    action.click(timeout=config.STEP_TIMEOUT_MS)
+
+
+def _visible_login_error(page) -> str:
+    try:
+        messages = page.locator(_ERROR_SELECTOR)
+        for index in range(min(messages.count(), 20)):
+            item = messages.nth(index)
+            if item.is_visible():
+                text = " ".join((item.inner_text() or "").split())
+                if text:
+                    return text[:240]
+    except Exception:
+        pass
+    return ""
+
+
+def _wait_for_login_result(page) -> None:
+    deadline = time.monotonic() + (config.PAGE_TIMEOUT_MS / 1000)
+    password_absent_since = None
+    while time.monotonic() < deadline:
+        password_field = _first_usable(page, _PASSWORD_SELECTORS)
+        error = _visible_login_error(page)
+        current_url = page.url
+        if error:
+            raise RuntimeError(f"The website rejected the login: {error}")
+        if _first_usable(page, _MFA_SELECTORS) is not None:
+            raise RuntimeError(
+                "The credentials were accepted, but multi-factor verification is required; login cannot be confirmed automatically"
+            )
+        if password_field is None:
+            password_absent_since = password_absent_since or time.monotonic()
+            if time.monotonic() - password_absent_since >= 0.75:
+                print(f"Login successful. Redirected to: {current_url}", flush=True)
+                return
+        else:
+            password_absent_since = None
+        page.wait_for_timeout(250)
+    raise RuntimeError(
+        "Login could not be confirmed: the website kept the credential form visible"
+    )
 
 
 def normalise_role(role: str) -> str:
@@ -67,12 +183,19 @@ def login(page, user=None, password=None):
     password = password or config.LOGIN_PASSWORD
     print(f"Navigating to {config.URL}", flush=True)
     page.goto(config.URL, timeout=config.PAGE_TIMEOUT_MS, wait_until="domcontentloaded")
-    page.wait_for_selector("input[placeholder='Enter user ID']", timeout=config.PAGE_TIMEOUT_MS)
-    page.fill("input[placeholder='Enter user ID']", user)
-    page.fill("input[placeholder='Enter password']", password)
-    page.click("button.login-btn:has-text('Login')", timeout=config.STEP_TIMEOUT_MS)
-    page.wait_for_url(lambda url: "/login" not in str(url), timeout=config.PAGE_TIMEOUT_MS)
-    print(f"Login successful. Redirected to: {page.url}", flush=True)
+    username_field = _wait_for_usable(page, _USERNAME_SELECTORS, "username or email")
+    username_field.fill(user)
+
+    password_field = _first_usable(page, _PASSWORD_SELECTORS)
+    if password_field is None:
+        # Support common two-step forms that ask for the user ID before showing
+        # the password field.
+        _click_login_action(page)
+        password_field = _wait_for_usable(page, _PASSWORD_SELECTORS, "password")
+
+    password_field.fill(password)
+    _click_login_action(page)
+    _wait_for_login_result(page)
 
 
 def _new_test_page(browser):

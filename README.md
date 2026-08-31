@@ -1,6 +1,7 @@
 # Flask Login API
 
-This backend exposes one endpoint: `POST /api/login`.
+This backend exposes one endpoint: `POST /api/login`. Credentials are checked
+against the `users` table in the configured MySQL database.
 
 ## Install and start
 
@@ -16,13 +17,18 @@ endpoint:
 
 ```json
 {
-  "username": "admin",
-  "password": "password123"
+  "username": "your-username",
+  "password": "your-password"
 }
 ```
 
-The defaults are intended for local development only. Override `AUTH_USERNAME`,
-`AUTH_PASSWORD`, `AUTH_SECRET`, and `AUTH_TOKEN_MAX_AGE` in a local `.env` file.
+Configure `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, and `DB_PORT` in the
+local `.env` file. For the current development setup, login passwords are read
+from `users.password`. You can also set `AUTH_SECRET` and `AUTH_TOKEN_MAX_AGE`
+for issued access tokens.
+
+> Warning: `users.password` currently stores plain-text passwords for temporary
+> testing only. Use secure password hashing before deploying this API.
 
 ## Verification
 

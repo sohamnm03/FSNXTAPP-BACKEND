@@ -1,5 +1,7 @@
 def test_login(client):
     assert client.post("/api/login", json={}).status_code == 400
+    assert client.post("/api/login", json=[]).status_code == 400
+    assert client.post("/api/login", json={"username": "missing", "password": "anything"}).status_code == 401
     assert client.post("/api/login", json={"username": "tester", "password": "wrong"}).status_code == 401
     response = client.post("/api/login", json={"username": "tester", "password": "test-password"})
     assert response.status_code == 200

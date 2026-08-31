@@ -5,8 +5,7 @@ import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
-
-from core.auth import create_access_token
+from itsdangerous import URLSafeTimedSerializer
 
 load_dotenv()
 
@@ -23,6 +22,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     if test_config:
         app.config.update(test_config)
     CORS(app)
+
     @app.post("/api/login")
     def login():
         data = request.get_json(silent=True) or {}
@@ -31,13 +31,17 @@ def create_app(test_config: dict | None = None) -> Flask:
             return jsonify({"success": False, "message": "Please fill in all fields."}), 400
         if username != app.config["AUTH_USERNAME"] or password != app.config["AUTH_PASSWORD"]:
             return jsonify({"success": False, "message": "Invalid username or password."}), 401
-        return jsonify({
-            "success": True,
-            "message": "Login successful.",
-            "access_token": create_access_token(username),
-            "token_type": "Bearer",
-            "expires_in": app.config["AUTH_TOKEN_MAX_AGE"],
-        })
+
+        serializer = URLSafeTimedSerializer(app.config["AUTH_SECRET"], salt="backend-auth")
+        return jsonify(
+            {
+                "success": True,
+                "message": "Login successful.",
+                "access_token": serializer.dumps({"sub": username}),
+                "token_type": "Bearer",
+                "expires_in": app.config["AUTH_TOKEN_MAX_AGE"],
+            }
+        )
 
     return app
 

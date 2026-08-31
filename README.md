@@ -1,8 +1,6 @@
-# Flask login API
+# Flask Login API
 
-This backend now exposes authentication only. Web Testing runs, logs, stopping,
-artifacts, and report downloads execute locally in the Electron frontend and do
-not call Flask.
+This backend exposes one endpoint: `POST /api/login`.
 
 ## Install and start
 
@@ -10,19 +8,24 @@ not call Flask.
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-Copy-Item .env.example .env
 python app.py
 ```
 
-The only application API is:
+The server runs at `http://127.0.0.1:5000`. Send JSON credentials to the login
+endpoint:
 
-```text
-POST /api/login
+```json
+{
+  "username": "admin",
+  "password": "password123"
+}
 ```
+
+The defaults are intended for local development only. Override `AUTH_USERNAME`,
+`AUTH_PASSWORD`, `AUTH_SECRET`, and `AUTH_TOKEN_MAX_AGE` in a local `.env` file.
 
 ## Verification
 
 ```powershell
-python -m compileall -q app.py core tests
-python -m pytest -q tests
+python -m pytest -q -p no:cacheprovider tests
 ```

@@ -2,5 +2,10 @@ __pycache__/
 *.py[cod]
 .env
 .venv/
+.venv*/
 venv/
+.deploy-venv/
 .pytest_cache/
+local.settings.json
+.python_packages/
+

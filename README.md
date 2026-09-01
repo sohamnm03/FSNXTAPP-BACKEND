@@ -45,3 +45,52 @@ kept synchronized.
 ```powershell
 python -m pytest -q -p no:cacheprovider tests
 ```
+
+## Deploy to Azure
+
+The app runs on Azure Functions (Flex Consumption, Linux, Python 3.12) as
+`fsnxt-app-function` in resource group `FS_ERP`, via `function_app.py`, which
+wraps the Flask app with `azure.functions.WsgiFunctionApp`.
+
+### One-time setup (per machine)
+
+```powershell
+winget install -e --id Microsoft.AzureCLI
+winget install -e --id Microsoft.Azure.FunctionsCoreTools
+winget install -e --id Python.Python.3.12
+```
+
+Close and reopen your terminal so PATH picks up the new tools, then log in
+once:
+
+```powershell
+az login
+```
+
+Confirm you're pointed at the right account/subscription with
+`az account show`.
+
+### Deploying
+
+From the project root:
+
+```powershell
+.\deploy.ps1
+```
+
+This validates `requirements.txt` and the Functions entry point locally
+before publishing, then runs `func azure functionapp publish
+fsnxt-app-function --python`. Run it any time you want to push updated code.
+
+### App settings (set once, not part of deployment)
+
+`DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_PORT`, `AUTH_SECRET`, and
+`GOOGLE_SSO_CLIENT_ID` must be configured directly on the Function App — they
+live in Azure, not in the deployed code, and `local.settings.json`/`.env`
+never get uploaded. Set or update them with:
+
+```powershell
+az functionapp config appsettings set -n fsnxt-app-function -g FS_ERP --settings `
+  DB_HOST=<value> DB_USER=<value> DB_PASSWORD=<value> DB_NAME=<value> DB_PORT=3306 `
+  AUTH_SECRET=<value> GOOGLE_SSO_CLIENT_ID=<value>
+```

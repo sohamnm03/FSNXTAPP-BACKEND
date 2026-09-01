@@ -7,8 +7,10 @@ import json
 import os
 import time
 from hmac import compare_digest
+from urllib.parse import urlparse
 
 import mysql.connector
+import requests
 from google.auth.exceptions import GoogleAuthError, TransportError
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token as google_id_token
@@ -22,7 +24,12 @@ load_dotenv()
 DEFAULT_GOOGLE_CLIENT_ID = (
     "418759424186-1unbscgfsrscmpopcfip8vrd62isu5rd.apps.googleusercontent.com"
 )
+DEFAULT_GOOGLE_DESKTOP_CLIENT_ID = (
+    "418759424186-vhvn6f4g6ckvef5gvjdtqi4g6gvfmvpe.apps.googleusercontent.com"
+)
 DEFAULT_GOOGLE_CLOCK_SKEW_SECONDS = 10
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+LOOPBACK_REDIRECT_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def _find_user(column: str, value: str) -> dict | None:
@@ -77,6 +84,48 @@ def verify_google_credential(
     )
 
 
+def exchange_google_authorization_code(
+    code: str,
+    code_verifier: str,
+    redirect_uri: str,
+    client_id: str,
+    client_secret: str,
+) -> dict:
+    response = requests.post(
+        GOOGLE_TOKEN_URL,
+        data={
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code_verifier": code_verifier,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        },
+        timeout=10,
+    )
+    payload = response.json() if response.content else {}
+    if not response.ok:
+        raise ValueError(
+            payload.get("error_description")
+            or payload.get("error")
+            or "Google rejected the authorization code."
+        )
+    return payload
+
+
+def verified_google_email(claims: dict) -> str | None:
+    issuer = claims.get("iss")
+    email = claims.get("email")
+    if (
+        issuer not in {"accounts.google.com", "https://accounts.google.com"}
+        or claims.get("email_verified") is not True
+        or not isinstance(email, str)
+        or not email
+    ):
+        return None
+    return email
+
+
 def diagnose_google_credential(credential: str, expected_audience: str) -> str:
     """Return a safe reason without logging or returning the credential itself."""
     try:
@@ -129,6 +178,10 @@ def create_app(test_config: dict | None = None) -> Flask:
         or os.environ.get("GOOGLE_CLIENT_ID")
         or DEFAULT_GOOGLE_CLIENT_ID
     )
+    google_desktop_client_id = (
+        os.environ.get("GOOGLE_DESKTOP_CLIENT_ID")
+        or DEFAULT_GOOGLE_DESKTOP_CLIENT_ID
+    )
     app.config.from_mapping(
         AUTH_SECRET=os.environ.get("AUTH_SECRET", "development-only-change-me"),
         AUTH_TOKEN_MAX_AGE=int(os.environ.get("AUTH_TOKEN_MAX_AGE", "3600")),
@@ -140,6 +193,9 @@ def create_app(test_config: dict | None = None) -> Flask:
             )
         ),
         GOOGLE_TOKEN_VERIFIER=verify_google_credential,
+        GOOGLE_DESKTOP_CLIENT_ID=google_desktop_client_id,
+        GOOGLE_DESKTOP_CLIENT_SECRET=os.environ.get("GOOGLE_DESKTOP_CLIENT_SECRET", ""),
+        GOOGLE_TOKEN_EXCHANGER=exchange_google_authorization_code,
         USER_LOOKUP_BY_USERNAME=find_user_by_username,
         USER_LOOKUP_BY_EMAIL=find_user_by_email,
         TESTING=False,
@@ -153,7 +209,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         data = request.get_json(silent=True) or {}
         if not isinstance(data, dict):
             return jsonify({"success": False, "message": "Invalid request body."}), 400
-
+                                                  
         username, password = data.get("username", ""), data.get("password", "")
         if (
             not isinstance(username, str)
@@ -212,20 +268,100 @@ def create_app(test_config: dict | None = None) -> Flask:
                 }
             ), 401
 
-        issuer = claims.get("iss")
-        email = claims.get("email")
-        if (
-            issuer not in {"accounts.google.com", "https://accounts.google.com"}
-            or claims.get("email_verified") is not True
-            or not isinstance(email, str)
-            or not email
-        ):
+        email = verified_google_email(claims)
+        if not email:
             return jsonify({"success": False, "message": "Google email could not be verified."}), 401
 
         try:
             user = app.config["USER_LOOKUP_BY_EMAIL"](email)
         except (mysql.connector.Error, KeyError, ValueError):
             app.logger.exception("Database lookup failed during Google login")
+            return jsonify({"success": False, "message": "Login service is unavailable."}), 503
+
+        if not user:
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "No account is registered for this Google email.",
+                }
+            ), 403
+
+        return jsonify(create_auth_response(app, user, "Google login successful."))
+
+    @app.post("/api/auth/google/desktop")
+    def google_desktop_login():
+        if not app.config["GOOGLE_DESKTOP_CLIENT_SECRET"]:
+            app.logger.error("GOOGLE_DESKTOP_CLIENT_SECRET is not configured")
+            return jsonify(
+                {"success": False, "message": "Google desktop sign-in is not configured on the server."}
+            ), 500
+
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "message": "Invalid request body."}), 400
+
+        code = data.get("code", "")
+        code_verifier = data.get("codeVerifier", "")
+        redirect_uri = data.get("redirectUri", "")
+        expected_nonce = data.get("nonce", "")
+        if not all(
+            isinstance(value, str) and value
+            for value in (code, code_verifier, redirect_uri, expected_nonce)
+        ):
+            return jsonify({"success": False, "message": "Google authorization details are missing."}), 400
+
+        parsed_redirect = urlparse(redirect_uri)
+        if parsed_redirect.scheme != "http" or parsed_redirect.hostname not in LOOPBACK_REDIRECT_HOSTS:
+            return jsonify({"success": False, "message": "Invalid redirect URI."}), 400
+
+        try:
+            tokens = app.config["GOOGLE_TOKEN_EXCHANGER"](
+                code,
+                code_verifier,
+                redirect_uri,
+                app.config["GOOGLE_DESKTOP_CLIENT_ID"],
+                app.config["GOOGLE_DESKTOP_CLIENT_SECRET"],
+            )
+        except requests.RequestException:
+            app.logger.exception("Google token exchange request failed")
+            return jsonify({"success": False, "message": "Could not reach Google to complete sign-in."}), 503
+        except ValueError as exc:
+            app.logger.warning("Google authorization code exchange rejected: %s", exc)
+            return jsonify({"success": False, "message": "Google sign-in could not be completed. Please try again."}), 401
+
+        id_token_value = tokens.get("id_token")
+        if not isinstance(id_token_value, str) or not id_token_value:
+            return jsonify({"success": False, "message": "Google did not return an identity token."}), 401
+
+        try:
+            claims = app.config["GOOGLE_TOKEN_VERIFIER"](
+                id_token_value,
+                app.config["GOOGLE_DESKTOP_CLIENT_ID"],
+                app.config["GOOGLE_CLOCK_SKEW_SECONDS"],
+            )
+        except TransportError:
+            app.logger.exception("Google signing keys could not be reached")
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "Google verification service is unavailable. Please try again.",
+                }
+            ), 503
+        except (GoogleAuthError, ValueError):
+            app.logger.exception("Google desktop credential verification failed")
+            return jsonify({"success": False, "message": "Google sign-in could not be verified."}), 401
+
+        if claims.get("nonce") != expected_nonce:
+            return jsonify({"success": False, "message": "Google sign-in could not be verified."}), 401
+
+        email = verified_google_email(claims)
+        if not email:
+            return jsonify({"success": False, "message": "Google email could not be verified."}), 401
+
+        try:
+            user = app.config["USER_LOOKUP_BY_EMAIL"](email)
+        except (mysql.connector.Error, KeyError, ValueError):
+            app.logger.exception("Database lookup failed during Google desktop login")
             return jsonify({"success": False, "message": "Login service is unavailable."}), 503
 
         if not user:

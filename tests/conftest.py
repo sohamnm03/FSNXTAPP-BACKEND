@@ -20,6 +20,14 @@ def app():
             raise ValueError("Invalid token")
         if credential == "network-error":
             raise TransportError("Google is unavailable")
+        if credential == "desktop-id-token":
+            return {
+                "iss": "https://accounts.google.com",
+                "email": "tester@example.com",
+                "email_verified": True,
+                "nonce": "expected-nonce",
+                "sub": "google-user-id",
+            }
         return {
             "iss": "https://accounts.google.com",
             "email": "tester@example.com",
@@ -27,11 +35,21 @@ def app():
             "sub": "google-user-id",
         }
 
+    def exchange_google_authorization_code(code, code_verifier, redirect_uri, client_id, client_secret):
+        assert client_id == "418759424186-vhvn6f4g6ckvef5gvjdtqi4g6gvfmvpe.apps.googleusercontent.com"
+        assert client_secret == "test-desktop-secret"
+        if code == "invalid-code":
+            raise ValueError("invalid_grant")
+        return {"id_token": "desktop-id-token"}
+
     return create_app(
         {
             "TESTING": True,
             "AUTH_SECRET": "test-signing-secret",
             "GOOGLE_TOKEN_VERIFIER": verify_google_token,
+            "GOOGLE_DESKTOP_CLIENT_ID": "418759424186-vhvn6f4g6ckvef5gvjdtqi4g6gvfmvpe.apps.googleusercontent.com",
+            "GOOGLE_DESKTOP_CLIENT_SECRET": "test-desktop-secret",
+            "GOOGLE_TOKEN_EXCHANGER": exchange_google_authorization_code,
             "USER_LOOKUP_BY_USERNAME": (
                 lambda username: user if username == user["username"] else None
             ),

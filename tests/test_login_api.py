@@ -61,3 +61,39 @@ def test_google_login(client):
     assert body["success"] is True
     assert body["access_token"]
     assert body["user"]["email"] == "tester@example.com"
+
+
+VALID_DESKTOP_PAYLOAD = {
+    "code": "valid-code",
+    "codeVerifier": "verifier",
+    "redirectUri": "http://127.0.0.1:54231/",
+    "nonce": "expected-nonce",
+}
+
+
+def test_google_desktop_login_rejects_missing_fields(client):
+    assert client.post("/api/auth/google/desktop", json={}).status_code == 400
+
+
+def test_google_desktop_login_rejects_non_loopback_redirect(client):
+    payload = {**VALID_DESKTOP_PAYLOAD, "redirectUri": "https://evil.example/"}
+    assert client.post("/api/auth/google/desktop", json=payload).status_code == 400
+
+
+def test_google_desktop_login_rejects_bad_authorization_code(client):
+    payload = {**VALID_DESKTOP_PAYLOAD, "code": "invalid-code"}
+    assert client.post("/api/auth/google/desktop", json=payload).status_code == 401
+
+
+def test_google_desktop_login_rejects_nonce_mismatch(client):
+    payload = {**VALID_DESKTOP_PAYLOAD, "nonce": "wrong-nonce"}
+    assert client.post("/api/auth/google/desktop", json=payload).status_code == 401
+
+
+def test_google_desktop_login_succeeds(client):
+    response = client.post("/api/auth/google/desktop", json=VALID_DESKTOP_PAYLOAD)
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["success"] is True
+    assert body["access_token"]
+    assert body["user"]["email"] == "tester@example.com"

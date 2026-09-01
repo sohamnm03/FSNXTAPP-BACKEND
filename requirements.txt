@@ -3,4 +3,5 @@ flask-cors>=5,<7
 google-auth>=2,<3
 mysql-connector-python>=9,<10
 python-dotenv>=1.0,<2
+requests>=2,<3
 pytest>=8,<9

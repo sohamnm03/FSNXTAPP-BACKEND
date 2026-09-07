@@ -1,4 +1,4 @@
-"""Minimal Flask backend exposing the login API only."""
+"""Flask backend exposing authentication and log APIs."""
 from __future__ import annotations
 
 import base64
@@ -69,6 +69,35 @@ def find_user_by_username(username: str) -> dict | None:
 
 def find_user_by_email(email: str) -> dict | None:
     return _find_user("email", email)
+
+
+def insert_log(username: str, client: str, tc: str, path: str) -> None:
+    connection = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        connection_timeout=10,
+    )
+    try:
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO table_logs (username, client, TC, path)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (username, client, tc, path),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
 
 
 def verify_google_credential(
@@ -198,11 +227,49 @@ def create_app(test_config: dict | None = None) -> Flask:
         GOOGLE_TOKEN_EXCHANGER=exchange_google_authorization_code,
         USER_LOOKUP_BY_USERNAME=find_user_by_username,
         USER_LOOKUP_BY_EMAIL=find_user_by_email,
+        LOG_INSERTER=insert_log,
         TESTING=False,
     )
     if test_config:
         app.config.update(test_config)
     CORS(app)
+
+    @app.post("/api/logs")
+    def create_log():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "message": "Invalid request body."}), 400
+
+        field_limits = {"username": 100, "client": 100, "TC": 100, "path": 500}
+        values = {field: data.get(field) for field in field_limits}
+
+        if any(not isinstance(value, str) or not value.strip() for value in values.values()):
+            return jsonify(
+                {"success": False, "message": "username, client, TC, and path are required."}
+            ), 400
+
+        too_long = [
+            field
+            for field, limit in field_limits.items()
+            if len(values[field]) > limit
+        ]
+        if too_long:
+            return jsonify(
+                {
+                    "success": False,
+                    "message": f"Field exceeds maximum length: {', '.join(too_long)}.",
+                }
+            ), 400
+
+        try:
+            app.config["LOG_INSERTER"](
+                values["username"], values["client"], values["TC"], values["path"]
+            )
+        except (mysql.connector.Error, KeyError, ValueError):
+            app.logger.exception("Database insert failed while creating log")
+            return jsonify({"success": False, "message": "Log service is unavailable."}), 503
+
+        return jsonify({"success": True, "message": "Log created successfully."}), 201
 
     @app.post("/api/login")
     def login():

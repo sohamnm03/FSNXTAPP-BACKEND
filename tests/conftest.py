@@ -7,6 +7,7 @@ from app import create_app
 
 @pytest.fixture
 def app():
+    inserted_logs = []
     user = {
         "id": 1,
         "username": "tester",
@@ -56,6 +57,15 @@ def app():
             "USER_LOOKUP_BY_EMAIL": (
                 lambda email: user if email == user["email"] else None
             ),
+            "LOG_INSERTER": lambda username, client, tc, path: inserted_logs.append(
+                {
+                    "username": username,
+                    "client": client,
+                    "TC": tc,
+                    "path": path,
+                }
+            ),
+            "INSERTED_LOGS": inserted_logs,
         }
     )
 

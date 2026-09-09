@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from google.auth.exceptions import TransportError
 from app import create_app
@@ -8,6 +10,17 @@ from app import create_app
 @pytest.fixture
 def app():
     inserted_logs = []
+    inserted_users = []
+    active_status_updates = []
+    users = [
+        {
+            "username": "tester",
+            "email": "tester@example.com",
+            "isActive": 1,
+            "created_at": datetime(2026, 9, 9, 10, 30, 0),
+            "updated_at": datetime(2026, 9, 9, 11, 45, 0),
+        }
+    ]
     user = {
         "id": 1,
         "username": "tester",
@@ -43,6 +56,12 @@ def app():
             raise ValueError("invalid_grant")
         return {"id_token": "desktop-id-token"}
 
+    def update_user_active_status(email, is_active):
+        if email == "missing@example.com":
+            return False
+        active_status_updates.append({"email": email, "isActive": is_active})
+        return True
+
     return create_app(
         {
             "TESTING": True,
@@ -57,6 +76,18 @@ def app():
             "USER_LOOKUP_BY_EMAIL": (
                 lambda email: user if email == user["email"] else None
             ),
+            "USERS_FETCHER": lambda: users,
+            "USER_INSERTER": lambda username, email, password_hash, password: inserted_users.append(
+                {
+                    "id": 2,
+                    "username": username,
+                    "email": email,
+                    "password_hash": password_hash,
+                    "password": password,
+                }
+            )
+            or 2,
+            "USER_ACTIVE_STATUS_UPDATER": update_user_active_status,
             "LOG_INSERTER": lambda username, client, tc, path: inserted_logs.append(
                 {
                     "username": username,
@@ -66,6 +97,9 @@ def app():
                 }
             ),
             "INSERTED_LOGS": inserted_logs,
+            "INSERTED_USERS": inserted_users,
+            "FETCHED_USERS": users,
+            "ACTIVE_STATUS_UPDATES": active_status_updates,
         }
     )
 

@@ -18,6 +18,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 from itsdangerous import URLSafeTimedSerializer
+from werkzeug.security import check_password_hash, generate_password_hash
 
 load_dotenv()
 
@@ -49,7 +50,7 @@ def _find_user(column: str, value: str) -> dict | None:
         try:
             cursor.execute(
                 f"""
-                SELECT id, username, email, password
+                SELECT id, username, email, password, password_hash
                 FROM users
                 WHERE LOWER({column}) = LOWER(%s)
                 LIMIT 1
@@ -69,6 +70,93 @@ def find_user_by_username(username: str) -> dict | None:
 
 def find_user_by_email(email: str) -> dict | None:
     return _find_user("email", email)
+
+
+def fetch_users() -> list[dict]:
+    connection = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        connection_timeout=10,
+    )
+    try:
+        cursor = connection.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                """
+                SELECT username, email, isActive, created_at, updated_at
+                FROM users
+                ORDER BY created_at DESC, id DESC
+                """
+            )
+            return cursor.fetchall()
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
+def insert_user(username: str, email: str, password_hash: str, password: str) -> int:
+    connection = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        connection_timeout=10,
+    )
+    try:
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO users (username, email, password_hash, created_at, password)
+                VALUES (%s, %s, %s, NOW(), %s)
+                """,
+                (username, email, password_hash, password),
+            )
+            connection.commit()
+            return cursor.lastrowid
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
+def update_user_active_status(email: str, is_active: bool) -> bool:
+    connection = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        connection_timeout=10,
+    )
+    try:
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                """
+                UPDATE users
+                SET isActive = %s, updated_at = NOW()
+                WHERE LOWER(email) = LOWER(%s)
+                """,
+                (1 if is_active else 0, email),
+            )
+            connection.commit()
+            return cursor.rowcount > 0
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
 
 
 def insert_log(username: str, client: str, tc: str, path: str) -> None:
@@ -200,6 +288,21 @@ def create_auth_response(app: Flask, user: dict, message: str) -> dict:
     }
 
 
+def password_matches(user: dict | None, password: str) -> bool:
+    if not user:
+        return False
+
+    stored_hash = user.get("password_hash")
+    if isinstance(stored_hash, str) and stored_hash:
+        try:
+            return check_password_hash(stored_hash, password)
+        except ValueError:
+            return False
+
+    stored_password = user.get("password")
+    return isinstance(stored_password, str) and compare_digest(stored_password, password)
+
+
 def create_app(test_config: dict | None = None) -> Flask:
     app = Flask(__name__)
     google_client_id = (
@@ -227,12 +330,125 @@ def create_app(test_config: dict | None = None) -> Flask:
         GOOGLE_TOKEN_EXCHANGER=exchange_google_authorization_code,
         USER_LOOKUP_BY_USERNAME=find_user_by_username,
         USER_LOOKUP_BY_EMAIL=find_user_by_email,
+        USERS_FETCHER=fetch_users,
+        USER_INSERTER=insert_user,
+        USER_ACTIVE_STATUS_UPDATER=update_user_active_status,
         LOG_INSERTER=insert_log,
         TESTING=False,
     )
     if test_config:
         app.config.update(test_config)
     CORS(app)
+
+    @app.get("/api/users")
+    def get_users():
+        try:
+            users = app.config["USERS_FETCHER"]()
+        except (mysql.connector.Error, KeyError, ValueError):
+            app.logger.exception("Database lookup failed while fetching users")
+            return jsonify({"success": False, "message": "User service is unavailable."}), 503
+
+        return jsonify(
+            {
+                "success": True,
+                "users": [
+                    {
+                        "username": user.get("username"),
+                        "email": user.get("email"),
+                        "isActive": user.get("isActive"),
+                        "created_at": (
+                            user["created_at"].isoformat()
+                            if hasattr(user.get("created_at"), "isoformat")
+                            else user.get("created_at")
+                        ),
+                        "updated_at": (
+                            user["updated_at"].isoformat()
+                            if hasattr(user.get("updated_at"), "isoformat")
+                            else user.get("updated_at")
+                        ),
+                    }
+                    for user in users
+                ],
+            }
+        )
+
+    @app.post("/api/users")
+    def create_user():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "message": "Invalid request body."}), 400
+
+        username = data.get("username", "")
+        email = data.get("email", "")
+        password = data.get("password", "")
+        if not all(isinstance(value, str) and value.strip() for value in (username, email, password)):
+            return jsonify(
+                {"success": False, "message": "username, email, and password are required."}
+            ), 400
+
+        username = username.strip()
+        email = email.strip()
+        if len(username) > 100:
+            return jsonify({"success": False, "message": "username exceeds maximum length."}), 400
+        if len(email) > 255:
+            return jsonify({"success": False, "message": "email exceeds maximum length."}), 400
+        if len(password) > 255:
+            return jsonify({"success": False, "message": "password exceeds maximum length."}), 400
+
+        try:
+            user_id = app.config["USER_INSERTER"](
+                username,
+                email,
+                generate_password_hash(password),
+                password,
+            )
+        except mysql.connector.IntegrityError:
+            return jsonify({"success": False, "message": "Username or email already exists."}), 409
+        except (mysql.connector.Error, KeyError, ValueError):
+            app.logger.exception("Database insert failed while creating user")
+            return jsonify({"success": False, "message": "User service is unavailable."}), 503
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "User created successfully.",
+                "user": {"id": user_id, "username": username, "email": email},
+            }
+        ), 201
+
+    @app.patch("/api/users/active")
+    def set_user_active_status():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "message": "Invalid request body."}), 400
+
+        email = data.get("email", "")
+        is_active = data.get("isActive")
+        if not isinstance(email, str) or not email.strip():
+            return jsonify({"success": False, "message": "email is required."}), 400
+        if not isinstance(is_active, bool):
+            return jsonify({"success": False, "message": "isActive must be true or false."}), 400
+
+        email = email.strip()
+        if len(email) > 255:
+            return jsonify({"success": False, "message": "email exceeds maximum length."}), 400
+
+        try:
+            updated = app.config["USER_ACTIVE_STATUS_UPDATER"](email, is_active)
+        except (mysql.connector.Error, KeyError, ValueError):
+            app.logger.exception("Database update failed while changing user active status")
+            return jsonify({"success": False, "message": "User service is unavailable."}), 503
+
+        if not updated:
+            return jsonify({"success": False, "message": "User not found."}), 404
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "User active status updated successfully.",
+                "user": {"email": email, "isActive": is_active},
+            }
+        )
 
     @app.post("/api/logs")
     def create_log():
@@ -292,12 +508,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             app.logger.exception("Database lookup failed during login")
             return jsonify({"success": False, "message": "Login service is unavailable."}), 503
 
-        stored_password = user.get("password") if user else None
-        password_matches = isinstance(stored_password, str) and compare_digest(
-            stored_password, password
-        )
-
-        if not password_matches:
+        if not password_matches(user, password):
             return jsonify({"success": False, "message": "Invalid username or password."}), 401
 
         return jsonify(create_auth_response(app, user, "Login successful."))

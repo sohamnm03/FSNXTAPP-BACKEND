@@ -7,6 +7,7 @@ import json
 import os
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from hmac import compare_digest
 from urllib.parse import urlparse
 
@@ -20,7 +21,6 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from itsdangerous import URLSafeTimedSerializer
 from werkzeug.security import check_password_hash
-
 load_dotenv()
 
 DEFAULT_GOOGLE_CLIENT_ID = (
@@ -33,6 +33,15 @@ DEFAULT_GOOGLE_CLOCK_SKEW_SECONDS = 10
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 LOOPBACK_REDIRECT_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def get_current_ist_time() -> datetime:
+    """
+    Return the current date and time in India Standard Time (IST).
+    This is independent of the server's local timezone.
+    """
+    return datetime.now(IST).replace(tzinfo=None)
 
 def _find_user(column: str, value: str) -> dict | None:
     if column not in {"username", "email"}:
@@ -111,7 +120,7 @@ def insert_user(username: str, email: str, full_name: str) -> int:
     try:
         cursor = connection.cursor()
         try:
-            current_time = datetime.now()
+            current_time = get_current_ist_time()
             cursor.execute(
                 """
                 INSERT INTO users (username, email, full_name, created_at, updated_at)
@@ -148,7 +157,7 @@ def update_user_active_status(email: str, is_active: bool) -> bool:
                 SET isActive = %s, updated_at = %s
                 WHERE LOWER(email) = LOWER(%s)
                 """,
-                (1 if is_active else 0, datetime.now(), email),
+                (1 if is_active else 0, get_current_ist_time(), email),
             )
             connection.commit()
             return cursor.rowcount > 0
@@ -204,7 +213,7 @@ def insert_log(username: str, client: str, tc: str, path: str, lane: str) -> Non
                 INSERT INTO table_logs (username, client, TC, path, lane, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (username, client, tc, path, lane, datetime.now()),
+                (username, client, tc, path, lane, get_current_ist_time()),
             )
             connection.commit()
         except Exception:

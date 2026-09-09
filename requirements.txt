@@ -6,3 +6,4 @@ python-dotenv>=1.0,<2
 requests>=2,<3
 pytest>=8,<9
 azure-functions>=1.20,<2
+tzdata

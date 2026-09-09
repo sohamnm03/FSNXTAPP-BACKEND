@@ -160,6 +160,32 @@ def update_user_active_status(email: str, is_active: bool) -> bool:
         connection.close()
 
 
+def fetch_logs() -> list[dict]:
+    connection = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        connection_timeout=10,
+    )
+    try:
+        cursor = connection.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                """
+                SELECT *
+                FROM table_logs
+                ORDER BY created_at DESC
+                """
+            )
+            return cursor.fetchall()
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
 def insert_log(username: str, client: str, tc: str, path: str, lane: str) -> None:
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
@@ -334,6 +360,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         USERS_FETCHER=fetch_users,
         USER_INSERTER=insert_user,
         USER_ACTIVE_STATUS_UPDATER=update_user_active_status,
+        LOGS_FETCHER=fetch_logs,
         LOG_INSERTER=insert_log,
         TESTING=False,
     )
@@ -454,6 +481,31 @@ def create_app(test_config: dict | None = None) -> Flask:
                 "success": True,
                 "message": "User active status updated successfully.",
                 "user": {"email": email, "isActive": is_active},
+            }
+        )
+
+    @app.get("/api/logs")
+    def get_logs():
+        try:
+            logs = app.config["LOGS_FETCHER"]()
+        except (mysql.connector.Error, KeyError, ValueError):
+            app.logger.exception("Database lookup failed while fetching logs")
+            return jsonify({"success": False, "message": "Log service is unavailable."}), 503
+
+        return jsonify(
+            {
+                "success": True,
+                "logs": [
+                    {
+                        key: (
+                            value.isoformat()
+                            if hasattr(value, "isoformat")
+                            else value
+                        )
+                        for key, value in log.items()
+                    }
+                    for log in logs
+                ],
             }
         )
 

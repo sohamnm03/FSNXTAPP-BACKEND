@@ -16,6 +16,7 @@ def app():
         {
             "username": "tester",
             "email": "tester@example.com",
+            "full_name": "Tester User",
             "isActive": 1,
             "created_at": datetime(2026, 9, 9, 10, 30, 0),
             "updated_at": datetime(2026, 9, 9, 11, 45, 0),
@@ -77,13 +78,12 @@ def app():
                 lambda email: user if email == user["email"] else None
             ),
             "USERS_FETCHER": lambda: users,
-            "USER_INSERTER": lambda username, email, password_hash, password: inserted_users.append(
+            "USER_INSERTER": lambda username, email, full_name: inserted_users.append(
                 {
                     "id": 2,
                     "username": username,
                     "email": email,
-                    "password_hash": password_hash,
-                    "password": password,
+                    "full_name": full_name,
                 }
             )
             or 2,

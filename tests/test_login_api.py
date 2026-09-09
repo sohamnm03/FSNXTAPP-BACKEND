@@ -71,7 +71,7 @@ def test_create_user(client, app):
     assert client.post("/api/users", json={}).status_code == 400
     assert client.post(
         "/api/users",
-        json={"username": "tester", "email": "tester@example.com", "password": "x" * 256},
+        json={"username": "tester", "email": "tester@example.com", "full_name": "x" * 256},
     ).status_code == 400
 
     response = client.post(
@@ -79,7 +79,7 @@ def test_create_user(client, app):
         json={
             "username": "new-user",
             "email": "new@example.com",
-            "password": "secret-password",
+            "full_name": "New User",
         },
     )
 
@@ -90,15 +90,28 @@ def test_create_user(client, app):
         "id": 2,
         "username": "new-user",
         "email": "new@example.com",
+        "full_name": "New User",
     }
     inserted_user = app.config["INSERTED_USERS"][0]
-    assert inserted_user["password_hash"] != "secret-password"
-    assert inserted_user["password"] == "secret-password"
-    assert app_module.password_matches(inserted_user, "secret-password")
+    assert inserted_user["full_name"] == "New User"
+
+
+def test_create_user_accepts_full_name_camel_case(client, app):
+    response = client.post(
+        "/api/users",
+        json={
+            "username": "new-user",
+            "email": "new@example.com",
+            "fullName": "New User",
+        },
+    )
+
+    assert response.status_code == 201
+    assert app.config["INSERTED_USERS"][0]["full_name"] == "New User"
 
 
 def test_create_user_handles_duplicate(client, app):
-    def duplicate_user(username, email, password_hash, password):
+    def duplicate_user(username, email, full_name):
         raise mysql.connector.IntegrityError("duplicate")
 
     app.config["USER_INSERTER"] = duplicate_user
@@ -108,7 +121,7 @@ def test_create_user_handles_duplicate(client, app):
         json={
             "username": "tester",
             "email": "tester@example.com",
-            "password": "secret-password",
+            "full_name": "Tester User",
         },
     )
 
@@ -126,6 +139,7 @@ def test_get_users(client):
             {
                 "username": "tester",
                 "email": "tester@example.com",
+                "full_name": "Tester User",
                 "isActive": 1,
                 "created_at": "2026-09-09T10:30:00",
                 "updated_at": "2026-09-09T11:45:00",

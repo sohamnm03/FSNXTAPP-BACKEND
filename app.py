@@ -18,7 +18,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 from itsdangerous import URLSafeTimedSerializer
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import check_password_hash
 
 load_dotenv()
 
@@ -50,7 +50,7 @@ def _find_user(column: str, value: str) -> dict | None:
         try:
             cursor.execute(
                 f"""
-                SELECT id, username, email, password, password_hash
+                SELECT id, username, email
                 FROM users
                 WHERE LOWER({column}) = LOWER(%s)
                 LIMIT 1
@@ -86,7 +86,7 @@ def fetch_users() -> list[dict]:
         try:
             cursor.execute(
                 """
-                SELECT username, email, isActive, created_at, updated_at
+                SELECT username, email, isActive, created_at, updated_at, full_name
                 FROM users
                 ORDER BY created_at DESC, id DESC
                 """
@@ -98,7 +98,7 @@ def fetch_users() -> list[dict]:
         connection.close()
 
 
-def insert_user(username: str, email: str, password_hash: str, password: str) -> int:
+def insert_user(username: str, email: str, full_name: str) -> int:
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
         user=os.environ["DB_USER"],
@@ -112,10 +112,10 @@ def insert_user(username: str, email: str, password_hash: str, password: str) ->
         try:
             cursor.execute(
                 """
-                INSERT INTO users (username, email, password_hash, created_at, password)
-                VALUES (%s, %s, %s, NOW(), %s)
+                INSERT INTO users (username, email, full_name, created_at)
+                VALUES (%s, %s, %s, NOW())
                 """,
-                (username, email, password_hash, password),
+                (username, email, full_name),
             )
             connection.commit()
             return cursor.lastrowid
@@ -355,6 +355,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                     {
                         "username": user.get("username"),
                         "email": user.get("email"),
+                        "full_name": user.get("full_name"),
                         "isActive": user.get("isActive"),
                         "created_at": (
                             user["created_at"].isoformat()
@@ -380,27 +381,27 @@ def create_app(test_config: dict | None = None) -> Flask:
 
         username = data.get("username", "")
         email = data.get("email", "")
-        password = data.get("password", "")
-        if not all(isinstance(value, str) and value.strip() for value in (username, email, password)):
+        full_name = data.get("full_name", data.get("fullName", ""))
+        if not all(isinstance(value, str) and value.strip() for value in (username, email, full_name)):
             return jsonify(
-                {"success": False, "message": "username, email, and password are required."}
+                {"success": False, "message": "username, email, and full_name are required."}
             ), 400
 
         username = username.strip()
         email = email.strip()
+        full_name = full_name.strip()
         if len(username) > 100:
             return jsonify({"success": False, "message": "username exceeds maximum length."}), 400
         if len(email) > 255:
             return jsonify({"success": False, "message": "email exceeds maximum length."}), 400
-        if len(password) > 255:
-            return jsonify({"success": False, "message": "password exceeds maximum length."}), 400
+        if len(full_name) > 255:
+            return jsonify({"success": False, "message": "full_name exceeds maximum length."}), 400
 
         try:
             user_id = app.config["USER_INSERTER"](
                 username,
                 email,
-                generate_password_hash(password),
-                password,
+                full_name,
             )
         except mysql.connector.IntegrityError:
             return jsonify({"success": False, "message": "Username or email already exists."}), 409
@@ -412,7 +413,12 @@ def create_app(test_config: dict | None = None) -> Flask:
             {
                 "success": True,
                 "message": "User created successfully.",
-                "user": {"id": user_id, "username": username, "email": email},
+                "user": {
+                    "id": user_id,
+                    "username": username,
+                    "email": email,
+                    "full_name": full_name,
+                },
             }
         ), 201
 

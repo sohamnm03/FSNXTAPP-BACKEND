@@ -88,12 +88,13 @@ def app():
             )
             or 2,
             "USER_ACTIVE_STATUS_UPDATER": update_user_active_status,
-            "LOG_INSERTER": lambda username, client, tc, path: inserted_logs.append(
+            "LOG_INSERTER": lambda username, client, tc, path, lane: inserted_logs.append(
                 {
                     "username": username,
                     "client": client,
                     "TC": tc,
                     "path": path,
+                    "lane": lane,
                 }
             ),
             "INSERTED_LOGS": inserted_logs,

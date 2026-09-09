@@ -6,6 +6,7 @@ import binascii
 import json
 import os
 import time
+from datetime import datetime
 from hmac import compare_digest
 from urllib.parse import urlparse
 
@@ -159,7 +160,7 @@ def update_user_active_status(email: str, is_active: bool) -> bool:
         connection.close()
 
 
-def insert_log(username: str, client: str, tc: str, path: str) -> None:
+def insert_log(username: str, client: str, tc: str, path: str, lane: str) -> None:
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
         user=os.environ["DB_USER"],
@@ -173,10 +174,10 @@ def insert_log(username: str, client: str, tc: str, path: str) -> None:
         try:
             cursor.execute(
                 """
-                INSERT INTO table_logs (username, client, TC, path)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO table_logs (username, client, TC, path, lane, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (username, client, tc, path),
+                (username, client, tc, path, lane, datetime.now()),
             )
             connection.commit()
         except Exception:
@@ -462,12 +463,12 @@ def create_app(test_config: dict | None = None) -> Flask:
         if not isinstance(data, dict):
             return jsonify({"success": False, "message": "Invalid request body."}), 400
 
-        field_limits = {"username": 100, "client": 100, "TC": 100, "path": 500}
+        field_limits = {"username": 100, "client": 100, "TC": 100, "path": 500, "lane": 100}
         values = {field: data.get(field) for field in field_limits}
 
         if any(not isinstance(value, str) or not value.strip() for value in values.values()):
             return jsonify(
-                {"success": False, "message": "username, client, TC, and path are required."}
+                {"success": False, "message": "username, client, TC, path, and lane are required."}
             ), 400
 
         too_long = [
@@ -485,7 +486,11 @@ def create_app(test_config: dict | None = None) -> Flask:
 
         try:
             app.config["LOG_INSERTER"](
-                values["username"], values["client"], values["TC"], values["path"]
+                values["username"],
+                values["client"],
+                values["TC"],
+                values["path"],
+                values["lane"],
             )
         except (mysql.connector.Error, KeyError, ValueError):
             app.logger.exception("Database insert failed while creating log")

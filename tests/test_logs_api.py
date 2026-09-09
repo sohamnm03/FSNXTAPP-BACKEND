@@ -6,6 +6,7 @@ VALID_LOG = {
     "client": "desktop-app",
     "TC": "TC-123",
     "path": r"C:\data\report.csv",
+    "lane": "lane-1",
 }
 
 
@@ -30,7 +31,7 @@ def test_create_log_rejects_invalid_or_missing_fields(client):
 
 
 def test_create_log_rejects_values_longer_than_columns(client):
-    limits = {"username": 100, "client": 100, "TC": 100, "path": 500}
+    limits = {"username": 100, "client": 100, "TC": 100, "path": 500, "lane": 100}
 
     for field, limit in limits.items():
         payload = {**VALID_LOG, field: "x" * (limit + 1)}

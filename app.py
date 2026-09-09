@@ -111,12 +111,13 @@ def insert_user(username: str, email: str, full_name: str) -> int:
     try:
         cursor = connection.cursor()
         try:
+            current_time = datetime.now()
             cursor.execute(
                 """
-                INSERT INTO users (username, email, full_name, created_at)
-                VALUES (%s, %s, %s, NOW())
+                INSERT INTO users (username, email, full_name, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (username, email, full_name),
+                (username, email, full_name, current_time, current_time),
             )
             connection.commit()
             return cursor.lastrowid
@@ -144,10 +145,10 @@ def update_user_active_status(email: str, is_active: bool) -> bool:
             cursor.execute(
                 """
                 UPDATE users
-                SET isActive = %s, updated_at = NOW()
+                SET isActive = %s, updated_at = %s
                 WHERE LOWER(email) = LOWER(%s)
                 """,
-                (1 if is_active else 0, email),
+                (1 if is_active else 0, datetime.now(), email),
             )
             connection.commit()
             return cursor.rowcount > 0

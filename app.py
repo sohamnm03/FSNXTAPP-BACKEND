@@ -196,6 +196,56 @@ def fetch_logs() -> list[dict]:
         connection.close()
 
 
+def fetch_logs_for_username(username: str) -> list[dict] | None:
+    connection = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        connection_timeout=10,
+    )
+    try:
+        cursor = connection.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS user_count, MAX(COALESCE(isAdmin, 0)) AS isAdmin
+                FROM users
+                WHERE LOWER(username) = LOWER(%s)
+                """,
+                (username,),
+            )
+            user = cursor.fetchone()
+            if user is None or user.get("user_count") == 0:
+                return None
+
+            is_admin = int(user.get("isAdmin") or 0) == 1
+            if is_admin:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM table_logs
+                    ORDER BY created_at DESC
+                    """
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM table_logs
+                    WHERE LOWER(username) = LOWER(%s)
+                    ORDER BY created_at DESC
+                    """,
+                    (username,),
+                )
+            return cursor.fetchall()
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
 def insert_log(username: str, client: str, tc: str, path: str, lane: str) -> None:
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
@@ -371,6 +421,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         USER_INSERTER=insert_user,
         USER_ACTIVE_STATUS_UPDATER=update_user_active_status,
         LOGS_FETCHER=fetch_logs,
+        LOGS_FOR_USER_FETCHER=fetch_logs_for_username,
         LOG_INSERTER=insert_log,
         TESTING=False,
     )
@@ -496,11 +547,22 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.get("/api/logs")
     def get_logs():
+        username = request.args.get("username", "")
+        if not isinstance(username, str) or not username.strip():
+            return jsonify({"success": False, "message": "username is required."}), 400
+
+        username = username.strip()
+        if len(username) > 100:
+            return jsonify({"success": False, "message": "username exceeds maximum length."}), 400
+
         try:
-            logs = app.config["LOGS_FETCHER"]()
+            logs = app.config["LOGS_FOR_USER_FETCHER"](username)
         except (mysql.connector.Error, KeyError, ValueError):
             app.logger.exception("Database lookup failed while fetching logs")
             return jsonify({"success": False, "message": "Log service is unavailable."}), 503
+
+        if logs is None:
+            return jsonify({"success": False, "message": "User not found."}), 404
 
         return jsonify(
             {

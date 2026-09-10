@@ -18,9 +18,42 @@ def app():
             "email": "tester@example.com",
             "full_name": "Tester User",
             "isActive": 1,
+            "isAdmin": 0,
             "created_at": datetime(2026, 9, 9, 10, 30, 0),
             "updated_at": datetime(2026, 9, 9, 11, 45, 0),
         }
+    ]
+    log_users = [
+        *users,
+        {
+            "username": "admin",
+            "email": "admin@example.com",
+            "full_name": "Admin User",
+            "isActive": 1,
+            "isAdmin": 1,
+            "created_at": datetime(2026, 9, 8, 10, 30, 0),
+            "updated_at": datetime(2026, 9, 8, 11, 45, 0),
+        },
+    ]
+    logs = [
+        {
+            "my_row_id": 2,
+            "username": "other",
+            "client": "web-app",
+            "TC": "TC-456",
+            "path": r"C:\data\other.csv",
+            "created_at": datetime(2026, 9, 9, 12, 30, 0),
+            "lane": "lane-2",
+        },
+        {
+            "my_row_id": 1,
+            "username": "tester",
+            "client": "desktop-app",
+            "TC": "TC-123",
+            "path": r"C:\data\report.csv",
+            "created_at": datetime(2026, 9, 9, 10, 30, 0),
+            "lane": "lane-1",
+        },
     ]
     user = {
         "id": 1,
@@ -63,6 +96,19 @@ def app():
         active_status_updates.append({"email": email, "isActive": is_active})
         return True
 
+    def fetch_logs_for_username(username):
+        user_record = next(
+            (user for user in log_users if user["username"].lower() == username.lower()),
+            None,
+        )
+        if user_record is None:
+            return None
+        if user_record["isAdmin"] == 1:
+            return logs
+        return [
+            log for log in logs if log["username"].lower() == username.lower()
+        ]
+
     return create_app(
         {
             "TESTING": True,
@@ -88,6 +134,7 @@ def app():
             )
             or 2,
             "USER_ACTIVE_STATUS_UPDATER": update_user_active_status,
+            "LOGS_FOR_USER_FETCHER": fetch_logs_for_username,
             "LOG_INSERTER": lambda username, client, tc, path, lane: inserted_logs.append(
                 {
                     "username": username,
@@ -100,6 +147,7 @@ def app():
             "INSERTED_LOGS": inserted_logs,
             "INSERTED_USERS": inserted_users,
             "FETCHED_USERS": users,
+            "FETCHED_LOGS": logs,
             "ACTIVE_STATUS_UPDATES": active_status_updates,
         }
     )

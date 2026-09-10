@@ -10,6 +10,72 @@ VALID_LOG = {
 }
 
 
+def test_get_logs_returns_all_logs_for_admin(client):
+    response = client.get("/api/logs?username=admin")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "success": True,
+        "logs": [
+            {
+                "my_row_id": 2,
+                "username": "other",
+                "client": "web-app",
+                "TC": "TC-456",
+                "path": r"C:\data\other.csv",
+                "created_at": "2026-09-09T12:30:00",
+                "lane": "lane-2",
+            },
+            {
+                "my_row_id": 1,
+                "username": "tester",
+                "client": "desktop-app",
+                "TC": "TC-123",
+                "path": r"C:\data\report.csv",
+                "created_at": "2026-09-09T10:30:00",
+                "lane": "lane-1",
+            },
+        ],
+    }
+
+
+def test_get_logs_returns_only_matching_logs_for_non_admin(client):
+    response = client.get("/api/logs?username=tester")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "success": True,
+        "logs": [
+            {
+                "my_row_id": 1,
+                "username": "tester",
+                "client": "desktop-app",
+                "TC": "TC-123",
+                "path": r"C:\data\report.csv",
+                "created_at": "2026-09-09T10:30:00",
+                "lane": "lane-1",
+            },
+        ],
+    }
+
+
+def test_get_logs_requires_known_username(client):
+    assert client.get("/api/logs").status_code == 400
+    assert client.get("/api/logs?username=").status_code == 400
+    assert client.get("/api/logs?username=missing").status_code == 404
+
+
+def test_get_logs_handles_database_error(client, app):
+    def unavailable(_username):
+        raise mysql.connector.Error("database unavailable")
+
+    app.config["LOGS_FOR_USER_FETCHER"] = unavailable
+
+    response = client.get("/api/logs?username=tester")
+
+    assert response.status_code == 503
+
+
 def test_create_log(client, app):
     response = client.post("/api/logs", json=VALID_LOG)
 

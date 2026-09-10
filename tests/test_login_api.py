@@ -46,6 +46,7 @@ def test_login_accepts_password_hash(app):
         "email": "hashed@example.com",
         "password": None,
         "password_hash": generate_password_hash("secret-password"),
+        "isAdmin": 1,
     }
     app.config["USER_LOOKUP_BY_USERNAME"] = (
         lambda username: hashed_user if username == hashed_user["username"] else None
@@ -64,6 +65,7 @@ def test_login_accepts_password_hash(app):
     body = response.get_json()
     assert body["success"] is True
     assert body["user"]["email"] == "hashed@example.com"
+    assert body["user"]["isAdmin"] == 1
 
 
 def test_create_user(client, app):
@@ -227,6 +229,7 @@ def test_google_login(client):
     assert body["success"] is True
     assert body["access_token"]
     assert body["user"]["email"] == "tester@example.com"
+    assert body["user"]["isAdmin"] == 0
 
 
 VALID_DESKTOP_PAYLOAD = {
@@ -263,3 +266,4 @@ def test_google_desktop_login_succeeds(client):
     assert body["success"] is True
     assert body["access_token"]
     assert body["user"]["email"] == "tester@example.com"
+    assert body["user"]["isAdmin"] == 0

@@ -60,7 +60,7 @@ def _find_user(column: str, value: str) -> dict | None:
         try:
             cursor.execute(
                 f"""
-                SELECT id, username, email
+                SELECT id, username, email, isAdmin
                 FROM users
                 WHERE LOWER({column}) = LOWER(%s)
                 LIMIT 1
@@ -371,6 +371,7 @@ def create_auth_response(app: Flask, user: dict, message: str) -> dict:
             "id": user["id"],
             "username": user["username"],
             "email": user["email"],
+            "isAdmin": int(user.get("isAdmin") or 0),
         },
     }
 

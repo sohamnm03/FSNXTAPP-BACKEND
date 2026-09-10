@@ -60,6 +60,7 @@ def app():
         "username": "tester",
         "email": "tester@example.com",
         "password": "test-password",
+        "isAdmin": 0,
     }
     def verify_google_token(credential, audience, clock_skew_in_seconds):
         assert audience.endswith(".apps.googleusercontent.com")

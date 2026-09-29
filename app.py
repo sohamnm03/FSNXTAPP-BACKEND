@@ -60,7 +60,7 @@ def _find_user(column: str, value: str) -> dict | None:
         try:
             cursor.execute(
                 f"""
-                SELECT id, username, email, isAdmin
+                SELECT id, username, email, isAdmin, isActive
                 FROM users
                 WHERE LOWER({column}) = LOWER(%s)
                 LIMIT 1
@@ -700,6 +700,14 @@ def create_app(test_config: dict | None = None) -> Flask:
                 }
             ), 403
 
+        if not bool(user.get("isActive")):
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "This account is inactive. Please contact an administrator.",
+                }
+            ), 403
+
         return jsonify(create_auth_response(app, user, "Google login successful."))
 
     @app.post("/api/auth/google/desktop")
@@ -783,6 +791,14 @@ def create_app(test_config: dict | None = None) -> Flask:
                 {
                     "success": False,
                     "message": "No account is registered for this Google email.",
+                }
+            ), 403
+
+        if not bool(user.get("isActive")):
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "This account is inactive. Please contact an administrator.",
                 }
             ), 403
 

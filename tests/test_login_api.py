@@ -232,6 +232,26 @@ def test_google_login(client):
     assert body["user"]["isAdmin"] == 0
 
 
+def test_google_login_rejects_inactive_user(app):
+    app.config["USER_LOOKUP_BY_EMAIL"] = lambda email: {
+        "id": 1,
+        "username": "tester",
+        "email": email,
+        "isActive": 0,
+        "isAdmin": 0,
+    }
+
+    response = app.test_client().post(
+        "/api/auth/google", json={"credential": "valid-token"}
+    )
+
+    assert response.status_code == 403
+    assert response.get_json() == {
+        "success": False,
+        "message": "This account is inactive. Please contact an administrator.",
+    }
+
+
 VALID_DESKTOP_PAYLOAD = {
     "code": "valid-code",
     "codeVerifier": "verifier",
@@ -267,3 +287,23 @@ def test_google_desktop_login_succeeds(client):
     assert body["access_token"]
     assert body["user"]["email"] == "tester@example.com"
     assert body["user"]["isAdmin"] == 0
+
+
+def test_google_desktop_login_rejects_inactive_user(app):
+    app.config["USER_LOOKUP_BY_EMAIL"] = lambda email: {
+        "id": 1,
+        "username": "tester",
+        "email": email,
+        "isActive": False,
+        "isAdmin": 0,
+    }
+
+    response = app.test_client().post(
+        "/api/auth/google/desktop", json=VALID_DESKTOP_PAYLOAD
+    )
+
+    assert response.status_code == 403
+    assert response.get_json() == {
+        "success": False,
+        "message": "This account is inactive. Please contact an administrator.",
+    }

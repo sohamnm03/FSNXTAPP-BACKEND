@@ -62,6 +62,8 @@ def app():
         "password": "test-password",
         "isActive": 1,
         "isAdmin": 0,
+        "isDev": 1,
+        "isTesting": 0,
     }
     def verify_google_token(credential, audience, clock_skew_in_seconds):
         assert audience.endswith(".apps.googleusercontent.com")
@@ -126,12 +128,14 @@ def app():
                 lambda email: user if email == user["email"] else None
             ),
             "USERS_FETCHER": lambda: users,
-            "USER_INSERTER": lambda username, email, full_name: inserted_users.append(
+            "USER_INSERTER": lambda username, email, full_name, is_dev=False, is_testing=False: inserted_users.append(
                 {
                     "id": 2,
                     "username": username,
                     "email": email,
                     "full_name": full_name,
+                    "isDev": is_dev,
+                    "isTesting": is_testing,
                 }
             )
             or 2,

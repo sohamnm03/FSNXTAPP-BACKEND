@@ -82,6 +82,7 @@ def test_create_user(client, app):
             "username": "new-user",
             "email": "new@example.com",
             "full_name": "New User",
+            "isDev": True,
         },
     )
 
@@ -93,9 +94,40 @@ def test_create_user(client, app):
         "username": "new-user",
         "email": "new@example.com",
         "full_name": "New User",
+        "isDev": 1,
+        "isTesting": 0,
     }
     inserted_user = app.config["INSERTED_USERS"][0]
     assert inserted_user["full_name"] == "New User"
+    assert inserted_user["isDev"] is True
+    assert inserted_user["isTesting"] is False
+
+
+def test_set_user_modules(client, app):
+    calls = []
+    app.config["USER_MODULES_UPDATER"] = lambda email, dev, testing: (
+        calls.append((email, dev, testing)) or email == "tester@example.com"
+    )
+    assert client.patch("/api/users/modules", json=[]).status_code == 400
+    assert client.patch(
+        "/api/users/modules", json={"email": "tester@example.com", "isDev": 1, "isTesting": False}
+    ).status_code == 400
+    assert client.patch(
+        "/api/users/modules", json={"email": "x@example.com", "isDev": True, "isTesting": False}
+    ).status_code == 404
+
+    response = client.patch(
+        "/api/users/modules",
+        json={"email": "tester@example.com", "isDev": True, "isTesting": True},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["user"] == {
+        "email": "tester@example.com",
+        "isDev": 1,
+        "isTesting": 1,
+    }
+    assert calls[-1] == ("tester@example.com", True, True)
 
 
 def test_create_user_accepts_full_name_camel_case(client, app):
@@ -113,7 +145,7 @@ def test_create_user_accepts_full_name_camel_case(client, app):
 
 
 def test_create_user_handles_duplicate(client, app):
-    def duplicate_user(username, email, full_name):
+    def duplicate_user(username, email, full_name, is_dev=False, is_testing=False):
         raise mysql.connector.IntegrityError("duplicate")
 
     app.config["USER_INSERTER"] = duplicate_user
@@ -143,6 +175,9 @@ def test_get_users(client):
                 "email": "tester@example.com",
                 "full_name": "Tester User",
                 "isActive": 1,
+                "isDev": 0,
+                "isTesting": 0,
+                "modules": [],
                 "created_at": "2026-09-09T10:30:00",
                 "updated_at": "2026-09-09T11:45:00",
             }
@@ -307,3 +342,24 @@ def test_google_desktop_login_rejects_inactive_user(app):
         "success": False,
         "message": "This account is inactive. Please contact an administrator.",
     }
+
+
+def test_login_and_me_report_module_access(client):
+    login = client.post(
+        "/api/login", json={"username": "tester", "password": "test-password"}
+    )
+    body = login.get_json()
+    assert body["user"]["isDev"] == 1
+    assert body["user"]["isTesting"] == 0
+    assert body["user"]["modules"] == ["development"]
+
+    me = client.get(
+        "/api/me", headers={"Authorization": "Bearer " + body["access_token"]}
+    )
+    assert me.status_code == 200
+    assert me.get_json()["user"]["modules"] == ["development"]
+
+    assert client.get("/api/me").status_code == 401
+    assert client.get(
+        "/api/me", headers={"Authorization": "Bearer bad"}
+    ).status_code == 401

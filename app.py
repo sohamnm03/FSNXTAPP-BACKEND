@@ -19,7 +19,7 @@ from google.oauth2 import id_token as google_id_token
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
-from itsdangerous import URLSafeTimedSerializer
+from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash
 load_dotenv()
 
@@ -60,7 +60,7 @@ def _find_user(column: str, value: str) -> dict | None:
         try:
             cursor.execute(
                 f"""
-                SELECT id, username, email, isAdmin, isActive
+                SELECT id, username, email, isAdmin, isActive, isDev, isTesting
                 FROM users
                 WHERE LOWER({column}) = LOWER(%s)
                 LIMIT 1
@@ -96,7 +96,8 @@ def fetch_users() -> list[dict]:
         try:
             cursor.execute(
                 """
-                SELECT username, email, isActive, created_at, updated_at, full_name
+                SELECT username, email, isActive, created_at, updated_at, full_name,
+                       isDev, isTesting
                 FROM users
                 ORDER BY created_at DESC, id DESC
                 """
@@ -108,7 +109,13 @@ def fetch_users() -> list[dict]:
         connection.close()
 
 
-def insert_user(username: str, email: str, full_name: str) -> int:
+def insert_user(
+    username: str,
+    email: str,
+    full_name: str,
+    is_dev: bool = False,
+    is_testing: bool = False,
+) -> int:
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
         user=os.environ["DB_USER"],
@@ -123,10 +130,19 @@ def insert_user(username: str, email: str, full_name: str) -> int:
             current_time = get_current_ist_time()
             cursor.execute(
                 """
-                INSERT INTO users (username, email, full_name, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO users
+                    (username, email, full_name, isDev, isTesting, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (username, email, full_name, current_time, current_time),
+                (
+                    username,
+                    email,
+                    full_name,
+                    1 if is_dev else 0,
+                    1 if is_testing else 0,
+                    current_time,
+                    current_time,
+                ),
             )
             connection.commit()
             return cursor.lastrowid
@@ -161,6 +177,49 @@ def update_user_active_status(email: str, is_active: bool) -> bool:
             )
             connection.commit()
             return cursor.rowcount > 0
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
+def update_user_modules(email: str, is_dev: bool, is_testing: bool) -> bool:
+    connection = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        connection_timeout=10,
+    )
+    try:
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                """
+                UPDATE users
+                SET isDev = %s, isTesting = %s, updated_at = %s
+                WHERE LOWER(email) = LOWER(%s)
+                """,
+                (
+                    1 if is_dev else 0,
+                    1 if is_testing else 0,
+                    get_current_ist_time(),
+                    email,
+                ),
+            )
+            connection.commit()
+            # rowcount is 0 when values are unchanged, so confirm the user exists.
+            if cursor.rowcount > 0:
+                return True
+            cursor.execute(
+                "SELECT 1 FROM users WHERE LOWER(email) = LOWER(%s) LIMIT 1",
+                (email,),
+            )
+            return cursor.fetchone() is not None
         except Exception:
             connection.rollback()
             raise
@@ -357,6 +416,21 @@ def diagnose_google_credential(credential: str, expected_audience: str) -> str:
     return "Google ID token signature validation failed."
 
 
+def user_access(user: dict) -> dict:
+    """Describe what a user may use: module flags plus a convenient list."""
+    is_dev = int(user.get("isDev") or 0)
+    is_testing = int(user.get("isTesting") or 0)
+    return {
+        "isDev": is_dev,
+        "isTesting": is_testing,
+        "modules": [
+            name
+            for name, enabled in (("development", is_dev), ("testing", is_testing))
+            if enabled
+        ],
+    }
+
+
 def create_auth_response(app: Flask, user: dict, message: str) -> dict:
     serializer = URLSafeTimedSerializer(app.config["AUTH_SECRET"], salt="backend-auth")
     return {
@@ -372,6 +446,7 @@ def create_auth_response(app: Flask, user: dict, message: str) -> dict:
             "username": user["username"],
             "email": user["email"],
             "isAdmin": int(user.get("isAdmin") or 0),
+            **user_access(user),
         },
     }
 
@@ -421,6 +496,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         USERS_FETCHER=fetch_users,
         USER_INSERTER=insert_user,
         USER_ACTIVE_STATUS_UPDATER=update_user_active_status,
+        USER_MODULES_UPDATER=update_user_modules,
         LOGS_FETCHER=fetch_logs,
         LOGS_FOR_USER_FETCHER=fetch_logs_for_username,
         LOG_INSERTER=insert_log,
@@ -429,6 +505,43 @@ def create_app(test_config: dict | None = None) -> Flask:
     if test_config:
         app.config.update(test_config)
     CORS(app)
+
+    @app.get("/api/me")
+    def get_me():
+        """Return the current user's live access, given a Bearer token from login."""
+        header = request.headers.get("Authorization", "")
+        scheme, _, token = header.partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            return jsonify({"success": False, "message": "Missing bearer token."}), 401
+
+        serializer = URLSafeTimedSerializer(app.config["AUTH_SECRET"], salt="backend-auth")
+        try:
+            payload = serializer.loads(token.strip(), max_age=app.config["AUTH_TOKEN_MAX_AGE"])
+            username = payload["username"]
+        except (BadSignature, KeyError, TypeError):
+            return jsonify({"success": False, "message": "Invalid or expired token."}), 401
+
+        try:
+            user = app.config["USER_LOOKUP_BY_USERNAME"](username)
+        except (mysql.connector.Error, KeyError, ValueError):
+            app.logger.exception("Database lookup failed while fetching current user")
+            return jsonify({"success": False, "message": "User service is unavailable."}), 503
+
+        if not user or not bool(user.get("isActive")):
+            return jsonify({"success": False, "message": "User is not active."}), 403
+
+        return jsonify(
+            {
+                "success": True,
+                "user": {
+                    "id": user["id"],
+                    "username": user["username"],
+                    "email": user["email"],
+                    "isAdmin": int(user.get("isAdmin") or 0),
+                    **user_access(user),
+                },
+            }
+        )
 
     @app.get("/api/users")
     def get_users():
@@ -447,6 +560,9 @@ def create_app(test_config: dict | None = None) -> Flask:
                         "email": user.get("email"),
                         "full_name": user.get("full_name"),
                         "isActive": user.get("isActive"),
+                        "isDev": int(user.get("isDev") or 0),
+                        "isTesting": int(user.get("isTesting") or 0),
+                        "modules": user_access(user)["modules"],
                         "created_at": (
                             user["created_at"].isoformat()
                             if hasattr(user.get("created_at"), "isoformat")
@@ -487,11 +603,20 @@ def create_app(test_config: dict | None = None) -> Flask:
         if len(full_name) > 255:
             return jsonify({"success": False, "message": "full_name exceeds maximum length."}), 400
 
+        is_dev = data.get("isDev", False)
+        is_testing = data.get("isTesting", False)
+        if not isinstance(is_dev, bool) or not isinstance(is_testing, bool):
+            return jsonify(
+                {"success": False, "message": "isDev and isTesting must be true or false."}
+            ), 400
+
         try:
             user_id = app.config["USER_INSERTER"](
                 username,
                 email,
                 full_name,
+                is_dev,
+                is_testing,
             )
         except mysql.connector.IntegrityError:
             return jsonify({"success": False, "message": "Username or email already exists."}), 409
@@ -508,9 +633,52 @@ def create_app(test_config: dict | None = None) -> Flask:
                     "username": username,
                     "email": email,
                     "full_name": full_name,
+                    "isDev": 1 if is_dev else 0,
+                    "isTesting": 1 if is_testing else 0,
                 },
             }
         ), 201
+
+    @app.patch("/api/users/modules")
+    def set_user_modules():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "message": "Invalid request body."}), 400
+
+        email = data.get("email", "")
+        is_dev = data.get("isDev")
+        is_testing = data.get("isTesting")
+        if not isinstance(email, str) or not email.strip():
+            return jsonify({"success": False, "message": "email is required."}), 400
+        if not isinstance(is_dev, bool) or not isinstance(is_testing, bool):
+            return jsonify(
+                {"success": False, "message": "isDev and isTesting must be true or false."}
+            ), 400
+
+        email = email.strip()
+        if len(email) > 255:
+            return jsonify({"success": False, "message": "email exceeds maximum length."}), 400
+
+        try:
+            updated = app.config["USER_MODULES_UPDATER"](email, is_dev, is_testing)
+        except (mysql.connector.Error, KeyError, ValueError):
+            app.logger.exception("Database update failed while changing user modules")
+            return jsonify({"success": False, "message": "User service is unavailable."}), 503
+
+        if not updated:
+            return jsonify({"success": False, "message": "User not found."}), 404
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "User modules updated successfully.",
+                "user": {
+                    "email": email,
+                    "isDev": 1 if is_dev else 0,
+                    "isTesting": 1 if is_testing else 0,
+                },
+            }
+        )
 
     @app.patch("/api/users/active")
     def set_user_active_status():

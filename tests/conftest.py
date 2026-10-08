@@ -64,6 +64,7 @@ def app():
         "isAdmin": 0,
         "isDev": 1,
         "isTesting": 0,
+        "isConfig": 1,
     }
     def verify_google_token(credential, audience, clock_skew_in_seconds):
         assert audience.endswith(".apps.googleusercontent.com")

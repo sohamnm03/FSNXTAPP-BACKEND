@@ -37,6 +37,7 @@ def test_login(client):
     assert body["access_token"]
     assert body["token_type"] == "Bearer"
     assert body["user"]["email"] == "tester@example.com"
+    assert body["user"]["isConfig"] == 1
 
 
 def test_login_accepts_password_hash(app):
@@ -351,12 +352,14 @@ def test_login_and_me_report_module_access(client):
     body = login.get_json()
     assert body["user"]["isDev"] == 1
     assert body["user"]["isTesting"] == 0
+    assert body["user"]["isConfig"] == 1
     assert body["user"]["modules"] == ["development"]
 
     me = client.get(
         "/api/me", headers={"Authorization": "Bearer " + body["access_token"]}
     )
     assert me.status_code == 200
+    assert me.get_json()["user"]["isConfig"] == 1
     assert me.get_json()["user"]["modules"] == ["development"]
 
     assert client.get("/api/me").status_code == 401

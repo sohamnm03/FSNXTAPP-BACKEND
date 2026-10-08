@@ -60,7 +60,8 @@ def _find_user(column: str, value: str) -> dict | None:
         try:
             cursor.execute(
                 f"""
-                SELECT id, username, email, isAdmin, isActive, isDev, isTesting
+                SELECT id, username, email, isAdmin, isActive, isDev, isTesting,
+                       isConfig
                 FROM users
                 WHERE LOWER({column}) = LOWER(%s)
                 LIMIT 1
@@ -420,9 +421,11 @@ def user_access(user: dict) -> dict:
     """Describe what a user may use: module flags plus a convenient list."""
     is_dev = int(user.get("isDev") or 0)
     is_testing = int(user.get("isTesting") or 0)
+    is_config = int(user.get("isConfig") or 0)
     return {
         "isDev": is_dev,
         "isTesting": is_testing,
+        "isConfig": is_config,
         "modules": [
             name
             for name, enabled in (("development", is_dev), ("testing", is_testing))

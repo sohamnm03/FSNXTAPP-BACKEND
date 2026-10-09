@@ -106,20 +106,31 @@ def test_create_user(client, app):
 
 def test_set_user_modules(client, app):
     calls = []
-    app.config["USER_MODULES_UPDATER"] = lambda email, dev, testing: (
-        calls.append((email, dev, testing)) or email == "tester@example.com"
+    app.config["USER_MODULES_UPDATER"] = lambda email, dev, testing, config: (
+        calls.append((email, dev, testing, config)) or email == "tester@example.com"
     )
     assert client.patch("/api/users/modules", json=[]).status_code == 400
     assert client.patch(
         "/api/users/modules", json={"email": "tester@example.com", "isDev": 1, "isTesting": False}
     ).status_code == 400
     assert client.patch(
-        "/api/users/modules", json={"email": "x@example.com", "isDev": True, "isTesting": False}
+        "/api/users/modules",
+        json={
+            "email": "x@example.com",
+            "isDev": True,
+            "isTesting": False,
+            "isConfig": False,
+        },
     ).status_code == 404
 
     response = client.patch(
         "/api/users/modules",
-        json={"email": "tester@example.com", "isDev": True, "isTesting": True},
+        json={
+            "email": "tester@example.com",
+            "isDev": True,
+            "isTesting": True,
+            "isConfig": True,
+        },
     )
 
     assert response.status_code == 200
@@ -127,8 +138,9 @@ def test_set_user_modules(client, app):
         "email": "tester@example.com",
         "isDev": 1,
         "isTesting": 1,
+        "isConfig": 1,
     }
-    assert calls[-1] == ("tester@example.com", True, True)
+    assert calls[-1] == ("tester@example.com", True, True, True)
 
 
 def test_create_user_accepts_full_name_camel_case(client, app):

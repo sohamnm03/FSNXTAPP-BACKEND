@@ -187,7 +187,9 @@ def update_user_active_status(email: str, is_active: bool) -> bool:
         connection.close()
 
 
-def update_user_modules(email: str, is_dev: bool, is_testing: bool) -> bool:
+def update_user_modules(
+    email: str, is_dev: bool, is_testing: bool, is_config: bool
+) -> bool:
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
         user=os.environ["DB_USER"],
@@ -202,12 +204,13 @@ def update_user_modules(email: str, is_dev: bool, is_testing: bool) -> bool:
             cursor.execute(
                 """
                 UPDATE users
-                SET isDev = %s, isTesting = %s, updated_at = %s
+                SET isDev = %s, isTesting = %s, isConfig = %s, updated_at = %s
                 WHERE LOWER(email) = LOWER(%s)
                 """,
                 (
                     1 if is_dev else 0,
                     1 if is_testing else 0,
+                    1 if is_config else 0,
                     get_current_ist_time(),
                     email,
                 ),
@@ -652,11 +655,17 @@ def create_app(test_config: dict | None = None) -> Flask:
         email = data.get("email", "")
         is_dev = data.get("isDev")
         is_testing = data.get("isTesting")
+        is_config = data.get("isConfig")
         if not isinstance(email, str) or not email.strip():
             return jsonify({"success": False, "message": "email is required."}), 400
-        if not isinstance(is_dev, bool) or not isinstance(is_testing, bool):
+        if not all(
+            isinstance(value, bool) for value in (is_dev, is_testing, is_config)
+        ):
             return jsonify(
-                {"success": False, "message": "isDev and isTesting must be true or false."}
+                {
+                    "success": False,
+                    "message": "isDev, isTesting, and isConfig must be true or false.",
+                }
             ), 400
 
         email = email.strip()
@@ -664,7 +673,9 @@ def create_app(test_config: dict | None = None) -> Flask:
             return jsonify({"success": False, "message": "email exceeds maximum length."}), 400
 
         try:
-            updated = app.config["USER_MODULES_UPDATER"](email, is_dev, is_testing)
+            updated = app.config["USER_MODULES_UPDATER"](
+                email, is_dev, is_testing, is_config
+            )
         except (mysql.connector.Error, KeyError, ValueError):
             app.logger.exception("Database update failed while changing user modules")
             return jsonify({"success": False, "message": "User service is unavailable."}), 503
@@ -680,6 +691,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                     "email": email,
                     "isDev": 1 if is_dev else 0,
                     "isTesting": 1 if is_testing else 0,
+                    "isConfig": 1 if is_config else 0,
                 },
             }
         )

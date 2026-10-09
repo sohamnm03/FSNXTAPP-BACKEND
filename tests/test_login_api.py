@@ -178,6 +178,7 @@ def test_get_users(client):
                 "isActive": 1,
                 "isDev": 0,
                 "isTesting": 0,
+                "isConfig": 1,
                 "modules": [],
                 "created_at": "2026-09-09T10:30:00",
                 "updated_at": "2026-09-09T11:45:00",

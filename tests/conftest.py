@@ -19,6 +19,7 @@ def app():
             "full_name": "Tester User",
             "isActive": 1,
             "isAdmin": 0,
+            "isConfig": 1,
             "created_at": datetime(2026, 9, 9, 10, 30, 0),
             "updated_at": datetime(2026, 9, 9, 11, 45, 0),
         }

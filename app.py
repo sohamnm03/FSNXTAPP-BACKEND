@@ -98,7 +98,7 @@ def fetch_users() -> list[dict]:
             cursor.execute(
                 """
                 SELECT username, email, isActive, created_at, updated_at, full_name,
-                       isDev, isTesting
+                       isDev, isTesting, isConfig
                 FROM users
                 ORDER BY created_at DESC, id DESC
                 """
@@ -565,6 +565,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                         "isActive": user.get("isActive"),
                         "isDev": int(user.get("isDev") or 0),
                         "isTesting": int(user.get("isTesting") or 0),
+                        "isConfig": int(user.get("isConfig") or 0),
                         "modules": user_access(user)["modules"],
                         "created_at": (
                             user["created_at"].isoformat()

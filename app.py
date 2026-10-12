@@ -110,13 +110,15 @@ def fetch_users() -> list[dict]:
         connection.close()
 
 
-def insert_user(
+def upsert_user(
     username: str,
     email: str,
     full_name: str,
-    is_dev: bool = False,
-    is_testing: bool = False,
-) -> int:
+    is_active: bool,
+    is_dev: bool,
+    is_testing: bool,
+    is_config: bool,
+) -> tuple[int, bool]:
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
         user=os.environ["DB_USER"],
@@ -126,104 +128,68 @@ def insert_user(
         connection_timeout=10,
     )
     try:
-        cursor = connection.cursor()
+        cursor = connection.cursor(dictionary=True)
         try:
             current_time = get_current_ist_time()
             cursor.execute(
                 """
-                INSERT INTO users
-                    (username, email, full_name, isDev, isTesting, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    username,
-                    email,
-                    full_name,
-                    1 if is_dev else 0,
-                    1 if is_testing else 0,
-                    current_time,
-                    current_time,
-                ),
-            )
-            connection.commit()
-            return cursor.lastrowid
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            cursor.close()
-    finally:
-        connection.close()
-
-
-def update_user_active_status(email: str, is_active: bool) -> bool:
-    connection = mysql.connector.connect(
-        host=os.environ["DB_HOST"],
-        user=os.environ["DB_USER"],
-        password=os.environ["DB_PASSWORD"],
-        database=os.environ["DB_NAME"],
-        port=int(os.environ.get("DB_PORT", "3306")),
-        connection_timeout=10,
-    )
-    try:
-        cursor = connection.cursor()
-        try:
-            cursor.execute(
-                """
-                UPDATE users
-                SET isActive = %s, updated_at = %s
+                SELECT id
+                FROM users
                 WHERE LOWER(email) = LOWER(%s)
+                LIMIT 1
+                FOR UPDATE
                 """,
-                (1 if is_active else 0, get_current_ist_time(), email),
-            )
-            connection.commit()
-            return cursor.rowcount > 0
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            cursor.close()
-    finally:
-        connection.close()
-
-
-def update_user_modules(
-    email: str, is_dev: bool, is_testing: bool, is_config: bool
-) -> bool:
-    connection = mysql.connector.connect(
-        host=os.environ["DB_HOST"],
-        user=os.environ["DB_USER"],
-        password=os.environ["DB_PASSWORD"],
-        database=os.environ["DB_NAME"],
-        port=int(os.environ.get("DB_PORT", "3306")),
-        connection_timeout=10,
-    )
-    try:
-        cursor = connection.cursor()
-        try:
-            cursor.execute(
-                """
-                UPDATE users
-                SET isDev = %s, isTesting = %s, isConfig = %s, updated_at = %s
-                WHERE LOWER(email) = LOWER(%s)
-                """,
-                (
-                    1 if is_dev else 0,
-                    1 if is_testing else 0,
-                    1 if is_config else 0,
-                    get_current_ist_time(),
-                    email,
-                ),
-            )
-            connection.commit()
-            # rowcount is 0 when values are unchanged, so confirm the user exists.
-            if cursor.rowcount > 0:
-                return True
-            cursor.execute(
-                "SELECT 1 FROM users WHERE LOWER(email) = LOWER(%s) LIMIT 1",
                 (email,),
             )
-            return cursor.fetchone() is not None
+            existing_user = cursor.fetchone()
+
+            if existing_user:
+                user_id = int(existing_user["id"])
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET username = %s, email = %s, full_name = %s, isActive = %s,
+                        isDev = %s, isTesting = %s, isConfig = %s, updated_at = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        username,
+                        email,
+                        full_name,
+                        1 if is_active else 0,
+                        1 if is_dev else 0,
+                        1 if is_testing else 0,
+                        1 if is_config else 0,
+                        current_time,
+                        user_id,
+                    ),
+                )
+                created = False
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO users
+                        (username, email, full_name, isActive, isDev, isTesting,
+                         isConfig, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        username,
+                        email,
+                        full_name,
+                        1 if is_active else 0,
+                        1 if is_dev else 0,
+                        1 if is_testing else 0,
+                        1 if is_config else 0,
+                        current_time,
+                        current_time,
+                    ),
+                )
+                user_id = int(cursor.lastrowid)
+                created = True
+
+            connection.commit()
+            return user_id, created
         except Exception:
             connection.rollback()
             raise
@@ -500,9 +466,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         USER_LOOKUP_BY_USERNAME=find_user_by_username,
         USER_LOOKUP_BY_EMAIL=find_user_by_email,
         USERS_FETCHER=fetch_users,
-        USER_INSERTER=insert_user,
-        USER_ACTIVE_STATUS_UPDATER=update_user_active_status,
-        USER_MODULES_UPDATER=update_user_modules,
+        USER_UPSERTER=upsert_user,
         LOGS_FETCHER=fetch_logs,
         LOGS_FOR_USER_FETCHER=fetch_logs_for_username,
         LOG_INSERTER=insert_log,
@@ -587,7 +551,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         )
 
     @app.post("/api/users")
-    def create_user():
+    def upsert_user_endpoint():
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"success": False, "message": "Invalid request body."}), 400
@@ -610,125 +574,62 @@ def create_app(test_config: dict | None = None) -> Flask:
         if len(full_name) > 255:
             return jsonify({"success": False, "message": "full_name exceeds maximum length."}), 400
 
-        is_dev = data.get("isDev", False)
-        is_testing = data.get("isTesting", False)
-        if not isinstance(is_dev, bool) or not isinstance(is_testing, bool):
-            return jsonify(
-                {"success": False, "message": "isDev and isTesting must be true or false."}
-            ), 400
+        flags = {}
+        for field in ("isActive", "isDev", "isTesting", "isConfig"):
+            value = data.get(field)
+            if isinstance(value, bool):
+                flags[field] = value
+            elif isinstance(value, int) and value in (0, 1):
+                flags[field] = bool(value)
+            else:
+                return jsonify(
+                    {
+                        "success": False,
+                        "message": (
+                            "isActive, isDev, isTesting, and isConfig must each "
+                            "be true, false, 0, or 1."
+                        ),
+                    }
+                ), 400
 
         try:
-            user_id = app.config["USER_INSERTER"](
+            user_id, created = app.config["USER_UPSERTER"](
                 username,
                 email,
                 full_name,
-                is_dev,
-                is_testing,
+                flags["isActive"],
+                flags["isDev"],
+                flags["isTesting"],
+                flags["isConfig"],
             )
         except mysql.connector.IntegrityError:
-            return jsonify({"success": False, "message": "Username or email already exists."}), 409
+            return jsonify(
+                {"success": False, "message": "User data conflicts with an existing record."}
+            ), 409
         except (mysql.connector.Error, KeyError, ValueError):
-            app.logger.exception("Database insert failed while creating user")
+            app.logger.exception("Database upsert failed while saving user")
             return jsonify({"success": False, "message": "User service is unavailable."}), 503
 
         return jsonify(
             {
                 "success": True,
-                "message": "User created successfully.",
+                "message": (
+                    "User created successfully."
+                    if created
+                    else "User updated successfully."
+                ),
                 "user": {
                     "id": user_id,
                     "username": username,
                     "email": email,
                     "full_name": full_name,
-                    "isDev": 1 if is_dev else 0,
-                    "isTesting": 1 if is_testing else 0,
+                    "isActive": int(flags["isActive"]),
+                    "isDev": int(flags["isDev"]),
+                    "isTesting": int(flags["isTesting"]),
+                    "isConfig": int(flags["isConfig"]),
                 },
             }
-        ), 201
-
-    @app.patch("/api/users/modules")
-    def set_user_modules():
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict):
-            return jsonify({"success": False, "message": "Invalid request body."}), 400
-
-        email = data.get("email", "")
-        is_dev = data.get("isDev")
-        is_testing = data.get("isTesting")
-        is_config = data.get("isConfig")
-        if not isinstance(email, str) or not email.strip():
-            return jsonify({"success": False, "message": "email is required."}), 400
-        if not all(
-            isinstance(value, bool) for value in (is_dev, is_testing, is_config)
-        ):
-            return jsonify(
-                {
-                    "success": False,
-                    "message": "isDev, isTesting, and isConfig must be true or false.",
-                }
-            ), 400
-
-        email = email.strip()
-        if len(email) > 255:
-            return jsonify({"success": False, "message": "email exceeds maximum length."}), 400
-
-        try:
-            updated = app.config["USER_MODULES_UPDATER"](
-                email, is_dev, is_testing, is_config
-            )
-        except (mysql.connector.Error, KeyError, ValueError):
-            app.logger.exception("Database update failed while changing user modules")
-            return jsonify({"success": False, "message": "User service is unavailable."}), 503
-
-        if not updated:
-            return jsonify({"success": False, "message": "User not found."}), 404
-
-        return jsonify(
-            {
-                "success": True,
-                "message": "User modules updated successfully.",
-                "user": {
-                    "email": email,
-                    "isDev": 1 if is_dev else 0,
-                    "isTesting": 1 if is_testing else 0,
-                    "isConfig": 1 if is_config else 0,
-                },
-            }
-        )
-
-    @app.patch("/api/users/active")
-    def set_user_active_status():
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict):
-            return jsonify({"success": False, "message": "Invalid request body."}), 400
-
-        email = data.get("email", "")
-        is_active = data.get("isActive")
-        if not isinstance(email, str) or not email.strip():
-            return jsonify({"success": False, "message": "email is required."}), 400
-        if not isinstance(is_active, bool):
-            return jsonify({"success": False, "message": "isActive must be true or false."}), 400
-
-        email = email.strip()
-        if len(email) > 255:
-            return jsonify({"success": False, "message": "email exceeds maximum length."}), 400
-
-        try:
-            updated = app.config["USER_ACTIVE_STATUS_UPDATER"](email, is_active)
-        except (mysql.connector.Error, KeyError, ValueError):
-            app.logger.exception("Database update failed while changing user active status")
-            return jsonify({"success": False, "message": "User service is unavailable."}), 503
-
-        if not updated:
-            return jsonify({"success": False, "message": "User not found."}), 404
-
-        return jsonify(
-            {
-                "success": True,
-                "message": "User active status updated successfully.",
-                "user": {"email": email, "isActive": is_active},
-            }
-        )
+        ), 201 if created else 200
 
     @app.get("/api/logs")
     def get_logs():

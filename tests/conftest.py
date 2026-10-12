@@ -10,15 +10,17 @@ from app import create_app
 @pytest.fixture
 def app():
     inserted_logs = []
-    inserted_users = []
-    active_status_updates = []
+    upserted_users = []
     users = [
         {
+            "id": 1,
             "username": "tester",
             "email": "tester@example.com",
             "full_name": "Tester User",
             "isActive": 1,
             "isAdmin": 0,
+            "isDev": 0,
+            "isTesting": 0,
             "isConfig": 1,
             "created_at": datetime(2026, 9, 9, 10, 30, 0),
             "updated_at": datetime(2026, 9, 9, 11, 45, 0),
@@ -96,11 +98,27 @@ def app():
             raise ValueError("invalid_grant")
         return {"id_token": "desktop-id-token"}
 
-    def update_user_active_status(email, is_active):
-        if email == "missing@example.com":
-            return False
-        active_status_updates.append({"email": email, "isActive": is_active})
-        return True
+    def upsert_user_record(
+        username, email, full_name, is_active, is_dev, is_testing, is_config
+    ):
+        existing = next(
+            (item for item in users if item["email"].lower() == email.lower()),
+            None,
+        )
+        created = existing is None
+        user_id = 2 if created else existing["id"]
+        record = {
+            "id": user_id,
+            "username": username,
+            "email": email,
+            "full_name": full_name,
+            "isActive": int(is_active),
+            "isDev": int(is_dev),
+            "isTesting": int(is_testing),
+            "isConfig": int(is_config),
+        }
+        upserted_users.append(record)
+        return user_id, created
 
     def fetch_logs_for_username(username):
         user_record = next(
@@ -130,18 +148,7 @@ def app():
                 lambda email: user if email == user["email"] else None
             ),
             "USERS_FETCHER": lambda: users,
-            "USER_INSERTER": lambda username, email, full_name, is_dev=False, is_testing=False: inserted_users.append(
-                {
-                    "id": 2,
-                    "username": username,
-                    "email": email,
-                    "full_name": full_name,
-                    "isDev": is_dev,
-                    "isTesting": is_testing,
-                }
-            )
-            or 2,
-            "USER_ACTIVE_STATUS_UPDATER": update_user_active_status,
+            "USER_UPSERTER": upsert_user_record,
             "LOGS_FOR_USER_FETCHER": fetch_logs_for_username,
             "LOG_INSERTER": lambda username, client, tc, path, lane: inserted_logs.append(
                 {
@@ -153,10 +160,9 @@ def app():
                 }
             ),
             "INSERTED_LOGS": inserted_logs,
-            "INSERTED_USERS": inserted_users,
+            "UPSERTED_USERS": upserted_users,
             "FETCHED_USERS": users,
             "FETCHED_LOGS": logs,
-            "ACTIVE_STATUS_UPDATES": active_status_updates,
         }
     )
 

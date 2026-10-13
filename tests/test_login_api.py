@@ -304,6 +304,110 @@ def test_upsert_user_handles_database_error(client, app):
     assert response.status_code == 503
 
 
+def test_delete_user_by_email(client, app):
+    assert client.delete("/api/users", json=[]).status_code == 400
+    assert client.delete("/api/users", json={}).status_code == 400
+    assert client.delete("/api/users", json={"email": 123}).status_code == 400
+    assert client.delete(
+        "/api/users", json={"email": "x" * 256}
+    ).status_code == 400
+
+    response = client.delete(
+        "/api/users", json={"email": " TESTER@EXAMPLE.COM "}
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "success": True,
+        "message": "User deleted successfully.",
+        "email": "TESTER@EXAMPLE.COM",
+    }
+    assert app.config["DELETED_USERS"] == ["TESTER@EXAMPLE.COM"]
+    assert client.get("/api/users").get_json()["users"] == []
+
+
+def test_delete_user_returns_not_found(client):
+    response = client.delete(
+        "/api/users", json={"email": "missing@example.com"}
+    )
+
+    assert response.status_code == 404
+    assert response.get_json() == {
+        "success": False,
+        "message": "User not found.",
+    }
+
+
+def test_delete_user_handles_database_conflict(client, app):
+    def conflict(email):
+        raise mysql.connector.IntegrityError("user is referenced")
+
+    app.config["USER_DELETER"] = conflict
+
+    response = client.delete(
+        "/api/users", json={"email": "tester@example.com"}
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["success"] is False
+
+
+def test_delete_user_handles_database_error(client, app):
+    def unavailable(email):
+        raise mysql.connector.Error("database unavailable")
+
+    app.config["USER_DELETER"] = unavailable
+
+    response = client.delete(
+        "/api/users", json={"email": "tester@example.com"}
+    )
+
+    assert response.status_code == 503
+
+
+def test_database_delete_removes_matching_email(monkeypatch):
+    statements = []
+
+    class Cursor:
+        rowcount = 1
+
+        def execute(self, statement, parameters):
+            statements.append((" ".join(statement.split()), parameters))
+
+        def close(self):
+            pass
+
+    class Connection:
+        def __init__(self):
+            self.committed = False
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            raise AssertionError("The successful delete must not be rolled back")
+
+        def close(self):
+            pass
+
+    connection = Connection()
+    monkeypatch.setattr(app_module.mysql.connector, "connect", lambda **kwargs: connection)
+
+    deleted = app_module.delete_user_by_email("tester@example.com")
+
+    assert deleted is True
+    assert connection.committed is True
+    assert statements == [
+        (
+            "DELETE FROM users WHERE LOWER(email) = LOWER(%s) LIMIT 1",
+            ("tester@example.com",),
+        )
+    ]
+
+
 def test_legacy_user_update_endpoints_are_removed(client):
     assert client.patch("/api/users/modules", json={}).status_code == 404
     assert client.patch("/api/users/active", json={}).status_code == 404

@@ -206,6 +206,38 @@ def upsert_user(
         connection.close()
 
 
+def delete_user_by_email(email: str) -> bool:
+    connection = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        connection_timeout=10,
+    )
+    try:
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                """
+                DELETE FROM users
+                WHERE LOWER(email) = LOWER(%s)
+                LIMIT 1
+                """,
+                (email,),
+            )
+            deleted = cursor.rowcount > 0
+            connection.commit()
+            return deleted
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
 def fetch_logs() -> list[dict]:
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
@@ -478,6 +510,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         USER_LOOKUP_BY_EMAIL=find_user_by_email,
         USERS_FETCHER=fetch_users,
         USER_UPSERTER=upsert_user,
+        USER_DELETER=delete_user_by_email,
         LOGS_FETCHER=fetch_logs,
         LOGS_FOR_USER_FETCHER=fetch_logs_for_username,
         LOG_INSERTER=insert_log,
@@ -656,6 +689,44 @@ def create_app(test_config: dict | None = None) -> Flask:
                 },
             }
         ), 201 if created else 200
+
+    @app.delete("/api/users")
+    def delete_user_endpoint():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "message": "Invalid request body."}), 400
+
+        email = data.get("email", "")
+        if not isinstance(email, str) or not email.strip():
+            return jsonify({"success": False, "message": "email is required."}), 400
+
+        email = email.strip()
+        if len(email) > 255:
+            return jsonify({"success": False, "message": "email exceeds maximum length."}), 400
+
+        try:
+            deleted = app.config["USER_DELETER"](email)
+        except mysql.connector.IntegrityError:
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "User cannot be deleted because it is referenced by other records.",
+                }
+            ), 409
+        except (mysql.connector.Error, KeyError, ValueError):
+            app.logger.exception("Database delete failed while deleting user")
+            return jsonify({"success": False, "message": "User service is unavailable."}), 503
+
+        if not deleted:
+            return jsonify({"success": False, "message": "User not found."}), 404
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "User deleted successfully.",
+                "email": email,
+            }
+        )
 
     @app.get("/api/logs")
     def get_logs():

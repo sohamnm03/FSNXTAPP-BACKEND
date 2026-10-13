@@ -11,6 +11,7 @@ from app import create_app
 def app():
     inserted_logs = []
     upserted_users = []
+    deleted_users = []
     users = [
         {
             "id": 1,
@@ -134,6 +135,17 @@ def app():
         upserted_users.append(record)
         return user_id, created
 
+    def delete_user_record(email):
+        existing = next(
+            (item for item in users if item["email"].lower() == email.lower()),
+            None,
+        )
+        if existing is None:
+            return False
+        users.remove(existing)
+        deleted_users.append(email)
+        return True
+
     def fetch_logs_for_username(username):
         user_record = next(
             (user for user in log_users if user["username"].lower() == username.lower()),
@@ -163,6 +175,7 @@ def app():
             ),
             "USERS_FETCHER": lambda: users,
             "USER_UPSERTER": upsert_user_record,
+            "USER_DELETER": delete_user_record,
             "LOGS_FOR_USER_FETCHER": fetch_logs_for_username,
             "LOG_INSERTER": lambda username, client, tc, path, lane: inserted_logs.append(
                 {
@@ -175,6 +188,7 @@ def app():
             ),
             "INSERTED_LOGS": inserted_logs,
             "UPSERTED_USERS": upserted_users,
+            "DELETED_USERS": deleted_users,
             "FETCHED_USERS": users,
             "FETCHED_LOGS": logs,
         }

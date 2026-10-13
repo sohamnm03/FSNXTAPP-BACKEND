@@ -61,7 +61,7 @@ def _find_user(column: str, value: str) -> dict | None:
             cursor.execute(
                 f"""
                 SELECT id, username, email, isAdmin, isActive, isDev, isTesting,
-                       isConfig
+                       isConfig, isFsNxt, isSapFsNxt
                 FROM users
                 WHERE LOWER({column}) = LOWER(%s)
                 LIMIT 1
@@ -98,7 +98,7 @@ def fetch_users() -> list[dict]:
             cursor.execute(
                 """
                 SELECT username, email, isActive, created_at, updated_at, full_name,
-                       isDev, isTesting, isConfig
+                       isDev, isTesting, isConfig, isFsNxt, isSapFsNxt
                 FROM users
                 ORDER BY created_at DESC, id DESC
                 """
@@ -118,6 +118,8 @@ def upsert_user(
     is_dev: bool,
     is_testing: bool,
     is_config: bool,
+    is_fs_nxt: bool,
+    is_sap_fs_nxt: bool,
 ) -> tuple[int, bool]:
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
@@ -149,7 +151,8 @@ def upsert_user(
                     """
                     UPDATE users
                     SET username = %s, email = %s, full_name = %s, isActive = %s,
-                        isDev = %s, isTesting = %s, isConfig = %s, updated_at = %s
+                        isDev = %s, isTesting = %s, isConfig = %s,
+                        isFsNxt = %s, isSapFsNxt = %s, updated_at = %s
                     WHERE id = %s
                     """,
                     (
@@ -160,6 +163,8 @@ def upsert_user(
                         1 if is_dev else 0,
                         1 if is_testing else 0,
                         1 if is_config else 0,
+                        1 if is_fs_nxt else 0,
+                        1 if is_sap_fs_nxt else 0,
                         current_time,
                         user_id,
                     ),
@@ -170,8 +175,8 @@ def upsert_user(
                     """
                     INSERT INTO users
                         (username, email, full_name, isActive, isDev, isTesting,
-                         isConfig, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         isConfig, isFsNxt, isSapFsNxt, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         username,
@@ -181,6 +186,8 @@ def upsert_user(
                         1 if is_dev else 0,
                         1 if is_testing else 0,
                         1 if is_config else 0,
+                        1 if is_fs_nxt else 0,
+                        1 if is_sap_fs_nxt else 0,
                         current_time,
                         current_time,
                     ),
@@ -391,10 +398,14 @@ def user_access(user: dict) -> dict:
     is_dev = int(user.get("isDev") or 0)
     is_testing = int(user.get("isTesting") or 0)
     is_config = int(user.get("isConfig") or 0)
+    is_fs_nxt = int(user.get("isFsNxt") or 0)
+    is_sap_fs_nxt = int(user.get("isSapFsNxt") or 0)
     return {
         "isDev": is_dev,
         "isTesting": is_testing,
         "isConfig": is_config,
+        "isFsNxt": is_fs_nxt,
+        "isSapFsNxt": is_sap_fs_nxt,
         "modules": [
             name
             for name, enabled in (("development", is_dev), ("testing", is_testing))
@@ -533,6 +544,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                         "isDev": int(user.get("isDev") or 0),
                         "isTesting": int(user.get("isTesting") or 0),
                         "isConfig": int(user.get("isConfig") or 0),
+                        "isFsNxt": int(user.get("isFsNxt") or 0),
+                        "isSapFsNxt": int(user.get("isSapFsNxt") or 0),
                         "modules": user_access(user)["modules"],
                         "created_at": (
                             user["created_at"].isoformat()
@@ -575,7 +588,15 @@ def create_app(test_config: dict | None = None) -> Flask:
             return jsonify({"success": False, "message": "full_name exceeds maximum length."}), 400
 
         flags = {}
-        for field in ("isActive", "isDev", "isTesting", "isConfig"):
+        permission_fields = (
+            "isActive",
+            "isDev",
+            "isTesting",
+            "isConfig",
+            "isFsNxt",
+            "isSapFsNxt",
+        )
+        for field in permission_fields:
             value = data.get(field)
             if isinstance(value, bool):
                 flags[field] = value
@@ -586,7 +607,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                     {
                         "success": False,
                         "message": (
-                            "isActive, isDev, isTesting, and isConfig must each "
+                            f"{', '.join(permission_fields[:-1])}, and "
+                            f"{permission_fields[-1]} must each "
                             "be true, false, 0, or 1."
                         ),
                     }
@@ -601,6 +623,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                 flags["isDev"],
                 flags["isTesting"],
                 flags["isConfig"],
+                flags["isFsNxt"],
+                flags["isSapFsNxt"],
             )
         except mysql.connector.IntegrityError:
             return jsonify(
@@ -627,6 +651,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                     "isDev": int(flags["isDev"]),
                     "isTesting": int(flags["isTesting"]),
                     "isConfig": int(flags["isConfig"]),
+                    "isFsNxt": int(flags["isFsNxt"]),
+                    "isSapFsNxt": int(flags["isSapFsNxt"]),
                 },
             }
         ), 201 if created else 200

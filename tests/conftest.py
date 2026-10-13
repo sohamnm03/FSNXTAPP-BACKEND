@@ -22,6 +22,8 @@ def app():
             "isDev": 0,
             "isTesting": 0,
             "isConfig": 1,
+            "isFsNxt": 1,
+            "isSapFsNxt": 0,
             "created_at": datetime(2026, 9, 9, 10, 30, 0),
             "updated_at": datetime(2026, 9, 9, 11, 45, 0),
         }
@@ -68,6 +70,8 @@ def app():
         "isDev": 1,
         "isTesting": 0,
         "isConfig": 1,
+        "isFsNxt": 1,
+        "isSapFsNxt": 0,
     }
     def verify_google_token(credential, audience, clock_skew_in_seconds):
         assert audience.endswith(".apps.googleusercontent.com")
@@ -99,7 +103,15 @@ def app():
         return {"id_token": "desktop-id-token"}
 
     def upsert_user_record(
-        username, email, full_name, is_active, is_dev, is_testing, is_config
+        username,
+        email,
+        full_name,
+        is_active,
+        is_dev,
+        is_testing,
+        is_config,
+        is_fs_nxt,
+        is_sap_fs_nxt,
     ):
         existing = next(
             (item for item in users if item["email"].lower() == email.lower()),
@@ -116,6 +128,8 @@ def app():
             "isDev": int(is_dev),
             "isTesting": int(is_testing),
             "isConfig": int(is_config),
+            "isFsNxt": int(is_fs_nxt),
+            "isSapFsNxt": int(is_sap_fs_nxt),
         }
         upserted_users.append(record)
         return user_id, created

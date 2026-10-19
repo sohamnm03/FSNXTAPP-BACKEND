@@ -1,7 +1,8 @@
 # Flask Login API
 
-This backend exposes password and Google SSO login endpoints. Both flows require
-the user to exist in the configured MySQL `users` table.
+This backend exposes password and Google SSO login endpoints. All login flows
+require an active user in the configured MySQL `users` table and a submitted app
+version that is inside an inclusive range in the `valid_versions` table.
 
 ## Install and start
 
@@ -18,22 +19,44 @@ endpoint:
 ```json
 {
   "username": "your-username",
-  "password": "your-password"
+  "password": "your-password",
+  "version": "1.5.0"
+}
+```
+
+The version ranges are read from the existing `valid_versions` table:
+
+```sql
+SELECT my_row_id, `from`, `to`
+FROM valid_versions;
+```
+
+The API uses only `from` and `to`; `my_row_id` remains the table's primary key.
+The backticks are required because `from` is a SQL keyword. Ranges are
+inclusive, so a row containing `1.0.0` through `2.0.0` accepts `1.0.0`,
+`1.5.0`, and `2.0.0`. Versions must be strings in a standard dotted format
+such as `1.5.0`.
+
+Version validation happens inside the existing login endpoints. A version
+outside every configured range returns HTTP 403:
+
+```json
+{
+  "success": false,
+  "message": "Version not supported"
 }
 ```
 
 Configure `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, and `DB_PORT` in the
-local `.env` file. For the current development setup, login passwords are read
-from `users.password`. You can also set `AUTH_SECRET` and `AUTH_TOKEN_MAX_AGE`
-for issued access tokens.
-
-> Warning: `users.password` currently stores plain-text passwords for temporary
-> testing only. Use secure password hashing before deploying this API.
+local `.env` file. Google sign-in reads the user's identity, activity, and access
+flags from `users`; it does not require a `users.password` column. You can also
+set `AUTH_SECRET` and `AUTH_TOKEN_MAX_AGE` for issued access tokens.
 
 Google SSO uses `POST /api/auth/google` with the Google Identity Services ID
-token in a `credential` JSON field. Set `GOOGLE_SSO_CLIENT_ID` to the same web
-client ID used by the frontend. `GOOGLE_CLIENT_ID` remains supported as a
-fallback. A Google client secret is not used for ID-token verification.
+token in a `credential` JSON field and the app version in a `version` field.
+Set `GOOGLE_SSO_CLIENT_ID` to the same web client ID used by the frontend.
+`GOOGLE_CLIENT_ID` remains supported as a fallback. A Google client secret is
+not used for ID-token verification.
 
 Google ID-token verification allows 10 seconds of clock skew by default to
 handle small differences between the Google issuer and backend clocks. Override

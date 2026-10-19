@@ -177,6 +177,7 @@ def app():
             "USER_LOOKUP_BY_EMAIL": (
                 lambda email: user if email == user["email"] else None
             ),
+            "VERSION_CHECKER": lambda version: True,
             "USERS_FETCHER": lambda: users,
             "USER_UPSERTER": upsert_user_record,
             "USER_DELETER": delete_user_record,

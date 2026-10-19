@@ -25,12 +25,56 @@ def test_google_verifier_allows_small_clock_skew(monkeypatch):
     assert captured["clock_skew_in_seconds"] == 10
 
 
+def test_google_user_lookup_does_not_select_password(monkeypatch):
+    captured = {}
+
+    class Cursor:
+        def execute(self, statement, parameters):
+            captured["statement"] = " ".join(statement.split())
+            captured["parameters"] = parameters
+
+        def fetchone(self):
+            return {
+                "id": 1,
+                "username": "tester",
+                "email": "tester@example.com",
+                "isActive": 1,
+            }
+
+        def close(self):
+            pass
+
+    class Connection:
+        def cursor(self, *, dictionary):
+            assert dictionary is True
+            return Cursor()
+
+        def close(self):
+            pass
+
+    for name in ("DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"):
+        monkeypatch.setenv(name, "test-value")
+    monkeypatch.setattr(
+        app_module.mysql.connector, "connect", lambda **kwargs: Connection()
+    )
+
+    user = app_module.find_user_by_email("tester@example.com")
+
+    assert user["isActive"] == 1
+    assert "password" not in captured["statement"].lower()
+    assert "FROM users" in captured["statement"]
+    assert captured["parameters"] == ("tester@example.com",)
+
+
 def test_login(client):
     assert client.post("/api/login", json={}).status_code == 400
     assert client.post("/api/login", json=[]).status_code == 400
     assert client.post("/api/login", json={"username": "missing", "password": "anything"}).status_code == 401
     assert client.post("/api/login", json={"username": "tester", "password": "wrong"}).status_code == 401
-    response = client.post("/api/login", json={"username": "tester", "password": "test-password"})
+    response = client.post(
+        "/api/login",
+        json={"username": "tester", "password": "test-password", "version": "1.5.0"},
+    )
     assert response.status_code == 200
     body = response.get_json()
     assert body["success"] is True
@@ -40,6 +84,109 @@ def test_login(client):
     assert body["user"]["isConfig"] == 1
 
 
+def test_login_handles_version_database_error(client, app):
+    def unavailable(version):
+        raise mysql.connector.Error("database unavailable")
+
+    app.config["VERSION_CHECKER"] = unavailable
+
+    response = client.post(
+        "/api/login",
+        json={"username": "tester", "password": "test-password", "version": "1.5.0"},
+    )
+
+    assert response.status_code == 503
+    assert response.get_json() == {
+        "success": False,
+        "message": "Version validation service is unavailable.",
+    }
+
+
+def test_database_fetches_valid_version_ranges(monkeypatch):
+    statements = []
+
+    class Cursor:
+        def execute(self, statement):
+            statements.append(" ".join(statement.split()))
+
+        def fetchall(self):
+            return [{"version_from": "1.0.0", "version_to": "2.0.0"}]
+
+        def close(self):
+            pass
+
+    class Connection:
+        def cursor(self, *, dictionary):
+            assert dictionary is True
+            return Cursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        app_module.mysql.connector, "connect", lambda **kwargs: Connection()
+    )
+
+    ranges = app_module.fetch_valid_version_ranges()
+
+    assert ranges == [{"version_from": "1.0.0", "version_to": "2.0.0"}]
+    assert statements == [
+        "SELECT `from` AS version_from, `to` AS version_to FROM valid_versions"
+    ]
+
+
+def test_version_range_comparison_is_inclusive():
+    ranges = [{"version_from": "1.0.0", "version_to": "2.0.0"}]
+
+    assert app_module.version_matches_ranges(
+        app_module.Version("1.0.0"), ranges
+    ) is True
+    assert app_module.version_matches_ranges(
+        app_module.Version("2.0.0"), ranges
+    ) is True
+    assert app_module.version_matches_ranges(
+        app_module.Version("2.0.1"), ranges
+    ) is False
+
+
+def test_login_requires_active_user_and_matching_version(app):
+    client = app.test_client()
+
+    missing_version = client.post(
+        "/api/login", json={"username": "tester", "password": "test-password"}
+    )
+    assert missing_version.status_code == 400
+
+    app.config["VERSION_CHECKER"] = lambda version: False
+    mismatch = client.post(
+        "/api/login",
+        json={"username": "tester", "password": "test-password", "version": "2.0.1"},
+    )
+    assert mismatch.status_code == 403
+    assert mismatch.get_json() == {
+        "success": False,
+        "message": "Version not supported",
+    }
+
+    app.config["USER_LOOKUP_BY_USERNAME"] = lambda username: {
+        "id": 1,
+        "username": username,
+        "email": "tester@example.com",
+        "password": "test-password",
+        "isActive": 0,
+        "isAdmin": 0,
+    }
+    inactive = client.post(
+        "/api/login",
+        json={"username": "tester", "password": "test-password", "version": "1.5.0"},
+    )
+    assert inactive.status_code == 403
+    assert inactive.get_json() == {
+        "success": False,
+        "message": "This account is inactive. Please contact an administrator.",
+    }
+
+
 def test_login_accepts_password_hash(app):
     hashed_user = {
         "id": 3,
@@ -47,6 +194,7 @@ def test_login_accepts_password_hash(app):
         "email": "hashed@example.com",
         "password": None,
         "password_hash": generate_password_hash("secret-password"),
+        "isActive": 1,
         "isAdmin": 1,
     }
     app.config["USER_LOOKUP_BY_USERNAME"] = (
@@ -59,7 +207,8 @@ def test_login_accepts_password_hash(app):
     ).status_code == 401
 
     response = client.post(
-        "/api/login", json={"username": "hashed", "password": "secret-password"}
+        "/api/login",
+        json={"username": "hashed", "password": "secret-password", "version": "1.5.0"},
     )
 
     assert response.status_code == 200
@@ -493,7 +642,7 @@ def test_google_login(client):
     ).status_code == 401
 
     response = client.post(
-        "/api/auth/google", json={"credential": "valid-token"}
+        "/api/auth/google", json={"credential": "valid-token", "version": "1.5.0"}
     )
     assert response.status_code == 200
     body = response.get_json()
@@ -523,11 +672,26 @@ def test_google_login_rejects_inactive_user(app):
     }
 
 
+def test_google_login_rejects_mismatched_version(client):
+    client.application.config["VERSION_CHECKER"] = lambda version: False
+    response = client.post(
+        "/api/auth/google",
+        json={"credential": "valid-token", "version": "2.0.1"},
+    )
+
+    assert response.status_code == 403
+    assert response.get_json() == {
+        "success": False,
+        "message": "Version not supported",
+    }
+
+
 VALID_DESKTOP_PAYLOAD = {
     "code": "valid-code",
     "codeVerifier": "verifier",
     "redirectUri": "http://127.0.0.1:54231/",
     "nonce": "expected-nonce",
+    "version": "1.5.0",
 }
 
 
@@ -560,6 +724,20 @@ def test_google_desktop_login_succeeds(client):
     assert body["user"]["isAdmin"] == 0
 
 
+def test_google_desktop_login_rejects_mismatched_version(client):
+    client.application.config["VERSION_CHECKER"] = lambda version: False
+    response = client.post(
+        "/api/auth/google/desktop",
+        json={**VALID_DESKTOP_PAYLOAD, "version": "2.0.1"},
+    )
+
+    assert response.status_code == 403
+    assert response.get_json() == {
+        "success": False,
+        "message": "Version not supported",
+    }
+
+
 def test_google_desktop_login_rejects_inactive_user(app):
     app.config["USER_LOOKUP_BY_EMAIL"] = lambda email: {
         "id": 1,
@@ -582,7 +760,8 @@ def test_google_desktop_login_rejects_inactive_user(app):
 
 def test_login_and_me_report_module_access(client):
     login = client.post(
-        "/api/login", json={"username": "tester", "password": "test-password"}
+        "/api/login",
+        json={"username": "tester", "password": "test-password", "version": "1.5.0"},
     )
     body = login.get_json()
     assert body["user"]["isDev"] == 1

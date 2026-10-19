@@ -20,6 +20,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 from itsdangerous import BadSignature, URLSafeTimedSerializer
+from packaging.version import InvalidVersion, Version
 from werkzeug.security import check_password_hash
 load_dotenv()
 
@@ -81,6 +82,63 @@ def find_user_by_username(username: str) -> dict | None:
 
 def find_user_by_email(email: str) -> dict | None:
     return _find_user("email", email)
+
+
+def fetch_valid_version_ranges() -> list[dict]:
+    """Return every inclusive application-version range configured in MySQL."""
+    connection = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        connection_timeout=10,
+    )
+    try:
+        cursor = connection.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                """
+                SELECT `from` AS version_from, `to` AS version_to
+                FROM valid_versions
+                """
+            )
+            return cursor.fetchall()
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
+def parse_version(value: object) -> Version | None:
+    """Parse a non-empty version string, returning None for invalid input."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return Version(value.strip())
+    except InvalidVersion:
+        return None
+
+
+def version_matches_ranges(version: Version, ranges: list[dict]) -> bool:
+    """Return True when version is inside at least one inclusive DB range."""
+    for item in ranges:
+        try:
+            version_from = Version(str(item["version_from"]).strip())
+            version_to = Version(str(item["version_to"]).strip())
+        except (InvalidVersion, KeyError, TypeError) as exc:
+            raise ValueError("valid_versions contains an invalid range") from exc
+
+        if version_from > version_to:
+            raise ValueError("valid_versions contains a reversed range")
+        if version_from <= version <= version_to:
+            return True
+    return False
+
+
+def is_version_supported(version: Version) -> bool:
+    """Check a submitted version against the ranges stored in MySQL."""
+    return version_matches_ranges(version, fetch_valid_version_ranges())
 
 
 def fetch_users() -> list[dict]:
@@ -516,6 +574,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         GOOGLE_TOKEN_EXCHANGER=exchange_google_authorization_code,
         USER_LOOKUP_BY_USERNAME=find_user_by_username,
         USER_LOOKUP_BY_EMAIL=find_user_by_email,
+        VERSION_CHECKER=is_version_supported,
         USERS_FETCHER=fetch_users,
         USER_UPSERTER=upsert_user,
         USER_DELETER=delete_user_by_email,
@@ -527,6 +586,40 @@ def create_app(test_config: dict | None = None) -> Flask:
     if test_config:
         app.config.update(test_config)
     CORS(app)
+
+    def validate_requested_version(data: dict):
+        version = parse_version(data.get("version"))
+        if version is None:
+            return None, (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": "A valid version string is required.",
+                    }
+                ),
+                400,
+            )
+
+        try:
+            matched = app.config["VERSION_CHECKER"](version)
+        except (mysql.connector.Error, KeyError, TypeError, ValueError):
+            app.logger.exception("Database lookup failed while validating version")
+            return None, (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": "Version validation service is unavailable.",
+                    }
+                ),
+                503,
+            )
+
+        if not matched:
+            return None, (
+                jsonify({"success": False, "message": "Version not supported"}),
+                403,
+            )
+        return str(version), None
 
     @app.get("/api/me")
     def get_me():
@@ -841,6 +934,18 @@ def create_app(test_config: dict | None = None) -> Flask:
         if not password_matches(user, password):
             return jsonify({"success": False, "message": "Invalid username or password."}), 401
 
+        if not bool(user.get("isActive")):
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "This account is inactive. Please contact an administrator.",
+                }
+            ), 403
+
+        _, version_error = validate_requested_version(data)
+        if version_error:
+            return version_error
+
         return jsonify(create_auth_response(app, user, "Login successful."))
 
     @app.post("/api/auth/google")
@@ -901,6 +1006,10 @@ def create_app(test_config: dict | None = None) -> Flask:
                     "message": "This account is inactive. Please contact an administrator.",
                 }
             ), 403
+
+        _, version_error = validate_requested_version(data)
+        if version_error:
+            return version_error
 
         return jsonify(create_auth_response(app, user, "Google login successful."))
 
@@ -995,6 +1104,10 @@ def create_app(test_config: dict | None = None) -> Flask:
                     "message": "This account is inactive. Please contact an administrator.",
                 }
             ), 403
+
+        _, version_error = validate_requested_version(data)
+        if version_error:
+            return version_error
 
         return jsonify(create_auth_response(app, user, "Google login successful."))
 

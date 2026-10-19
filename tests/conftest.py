@@ -25,6 +25,7 @@ def app():
             "isConfig": 1,
             "isFsNxt": 1,
             "isSapFsNxt": 0,
+            "isDataMigration": 1,
             "created_at": datetime(2026, 9, 9, 10, 30, 0),
             "updated_at": datetime(2026, 9, 9, 11, 45, 0),
         }
@@ -73,6 +74,7 @@ def app():
         "isConfig": 1,
         "isFsNxt": 1,
         "isSapFsNxt": 0,
+        "isDataMigration": 1,
     }
     def verify_google_token(credential, audience, clock_skew_in_seconds):
         assert audience.endswith(".apps.googleusercontent.com")
@@ -113,6 +115,7 @@ def app():
         is_config,
         is_fs_nxt,
         is_sap_fs_nxt,
+        is_data_migration,
     ):
         existing = next(
             (item for item in users if item["email"].lower() == email.lower()),
@@ -131,6 +134,7 @@ def app():
             "isConfig": int(is_config),
             "isFsNxt": int(is_fs_nxt),
             "isSapFsNxt": int(is_sap_fs_nxt),
+            "isDataMigration": int(is_data_migration),
         }
         upserted_users.append(record)
         return user_id, created

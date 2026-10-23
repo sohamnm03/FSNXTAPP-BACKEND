@@ -149,6 +149,125 @@ def test_version_range_comparison_is_inclusive():
     ) is False
 
 
+def test_versions_endpoint_fetches_and_updates_only_existing_rows(client):
+    response = client.get("/api/versions")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "success": True,
+        "version": {"from": "1.0.0", "to": "2.0.0"},
+    }
+
+    response = client.post(
+        "/api/versions",
+        json={"from": "1.1.0", "to": "2.1.0"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "success": True,
+        "message": "Version updated successfully.",
+        "version": {"from": "1.1.0", "to": "2.1.0"},
+    }
+    assert client.get("/api/versions").get_json() == {
+        "success": True,
+        "version": {"from": "1.1.0", "to": "2.1.0"},
+    }
+
+
+def test_update_version_endpoint_validates_payload(client):
+    assert client.post("/api/versions", json=[]).status_code == 400
+    assert client.post(
+        "/api/versions",
+        json={"from": "not-a-version", "to": "2.0.0"},
+    ).status_code == 400
+
+    response = client.post(
+        "/api/versions",
+        json={"from": "2.0.0", "to": "1.0.0"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "success": False,
+        "message": "from version cannot be greater than to version.",
+    }
+
+
+def test_update_version_endpoint_does_not_create_a_missing_row(client, app):
+    app.config["VERSION_FETCHER"] = lambda: None
+    app.config["VERSION_UPDATER"] = lambda version_from, version_to: False
+
+    response = client.post(
+        "/api/versions",
+        json={"from": "1.0.0", "to": "2.0.0"},
+    )
+
+    assert response.status_code == 404
+    assert response.get_json() == {
+        "success": False,
+        "message": "Version entry not found.",
+    }
+    assert client.get("/api/versions").status_code == 404
+
+
+def test_database_update_version_never_inserts(monkeypatch):
+    statements = []
+
+    class Cursor:
+        def execute(self, statement, parameters=None):
+            statements.append((" ".join(statement.split()), parameters))
+
+        def fetchone(self):
+            return {"my_row_id": 4}
+
+        def close(self):
+            pass
+
+    class Connection:
+        def __init__(self):
+            self.committed = False
+            self.rolled_back = False
+
+        def cursor(self, *, dictionary):
+            assert dictionary is True
+            return Cursor()
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            pass
+
+    connection = Connection()
+    monkeypatch.setattr(
+        app_module.mysql.connector,
+        "connect",
+        lambda **kwargs: connection,
+    )
+
+    updated = app_module.update_version("1.0.0", "2.0.0")
+
+    assert updated is True
+    assert connection.committed is True
+    assert [statement for statement, _ in statements] == [
+        (
+            "SELECT my_row_id FROM valid_versions ORDER BY my_row_id "
+            "LIMIT 1 FOR UPDATE"
+        ),
+        (
+            "UPDATE valid_versions SET `from` = %s, `to` = %s "
+            "WHERE my_row_id = %s"
+        ),
+    ]
+    assert all("INSERT" not in statement for statement, _ in statements)
+    assert statements[0][1] is None
+    assert statements[1][1] == ("1.0.0", "2.0.0", 4)
+
+
 def test_login_requires_active_user_and_matching_version(app):
     client = app.test_client()
 
@@ -234,6 +353,7 @@ def test_upsert_user_creates_new_user(client, app):
             "isFsNxt": False,
             "isSapFsNxt": False,
             "isDataMigration": False,
+            "isMobile": False,
         },
     ).status_code == 400
     assert client.post(
@@ -248,6 +368,7 @@ def test_upsert_user_creates_new_user(client, app):
             "isFsNxt": False,
             "isSapFsNxt": False,
             "isDataMigration": False,
+            "isMobile": False,
         },
     ).status_code == 400
     assert client.post(
@@ -262,6 +383,7 @@ def test_upsert_user_creates_new_user(client, app):
             "isConfig": False,
             "isFsNxt": False,
             "isSapFsNxt": False,
+            "isDataMigration": False,
         },
     ).status_code == 400
 
@@ -278,6 +400,7 @@ def test_upsert_user_creates_new_user(client, app):
             "isFsNxt": True,
             "isSapFsNxt": False,
             "isDataMigration": True,
+            "isMobile": True,
         },
     )
 
@@ -297,6 +420,7 @@ def test_upsert_user_creates_new_user(client, app):
         "isFsNxt": 1,
         "isSapFsNxt": 0,
         "isDataMigration": 1,
+        "isMobile": 1,
     }
     assert app.config["UPSERTED_USERS"][0] == body["user"]
 
@@ -315,6 +439,7 @@ def test_upsert_user_updates_existing_email_and_accepts_database_flags(client):
             "isFsNxt": 0,
             "isSapFsNxt": 1,
             "isDataMigration": 0,
+            "isMobile": 1,
         },
     )
 
@@ -334,6 +459,7 @@ def test_upsert_user_updates_existing_email_and_accepts_database_flags(client):
             "isFsNxt": 0,
             "isSapFsNxt": 1,
             "isDataMigration": 0,
+            "isMobile": 1,
         },
     }
 
@@ -385,12 +511,14 @@ def test_database_upsert_updates_every_payload_field_for_existing_email(monkeypa
         True,
         False,
         True,
+        True,
     )
 
     assert (user_id, created) == (7, False)
     assert connection.committed is True
     update_statement, update_parameters = statements[1]
     assert "SET username = %s, email = %s, full_name = %s" in update_statement
+    assert "isDataMigration = %s, isMobile = %s" in update_statement
     assert update_parameters == (
         "Adil",
         "adil.a@fourthsignal.com",
@@ -402,8 +530,79 @@ def test_database_upsert_updates_every_payload_field_for_existing_email(monkeypa
         1,
         0,
         1,
+        1,
         "2026-10-12 12:00:00",
         7,
+    )
+
+
+def test_database_upsert_inserts_is_mobile_for_new_user(monkeypatch):
+    statements = []
+
+    class Cursor:
+        lastrowid = 8
+
+        def execute(self, statement, parameters):
+            statements.append((" ".join(statement.split()), parameters))
+
+        def fetchone(self):
+            return None
+
+        def close(self):
+            pass
+
+    class Connection:
+        def cursor(self, dictionary=False):
+            assert dictionary is True
+            return Cursor()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            raise AssertionError("The successful upsert must not be rolled back")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        app_module.mysql.connector, "connect", lambda **kwargs: Connection()
+    )
+    monkeypatch.setattr(
+        app_module, "get_current_ist_time", lambda: "2026-10-12 12:00:00"
+    )
+
+    user_id, created = app_module.upsert_user(
+        "Mobile User",
+        "mobile@example.com",
+        "Mobile User",
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+        False,
+        True,
+    )
+
+    assert (user_id, created) == (8, True)
+    insert_statement, insert_parameters = statements[1]
+    assert "isDataMigration, isMobile" in insert_statement
+    assert insert_parameters == (
+        "Mobile User",
+        "mobile@example.com",
+        "Mobile User",
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0,
+        1,
+        "2026-10-12 12:00:00",
+        "2026-10-12 12:00:00",
     )
 
 
@@ -421,6 +620,7 @@ def test_upsert_user_accepts_full_name_camel_case(client, app):
             "isFsNxt": False,
             "isSapFsNxt": False,
             "isDataMigration": False,
+            "isMobile": False,
         },
     )
 
@@ -447,6 +647,7 @@ def test_upsert_user_handles_database_conflict(client, app):
             "isFsNxt": True,
             "isSapFsNxt": False,
             "isDataMigration": True,
+            "isMobile": True,
         },
     )
 
@@ -472,6 +673,7 @@ def test_upsert_user_handles_database_error(client, app):
             "isFsNxt": True,
             "isSapFsNxt": False,
             "isDataMigration": True,
+            "isMobile": True,
         },
     )
 
@@ -606,6 +808,7 @@ def test_get_users(client):
                 "isFsNxt": 1,
                 "isSapFsNxt": 0,
                 "isDataMigration": 1,
+                "isMobile": 1,
                 "modules": [],
                 "created_at": "2026-09-09T10:30:00",
                 "updated_at": "2026-09-09T11:45:00",
@@ -770,6 +973,7 @@ def test_login_and_me_report_module_access(client):
     assert body["user"]["isFsNxt"] == 1
     assert body["user"]["isSapFsNxt"] == 0
     assert body["user"]["isDataMigration"] == 1
+    assert body["user"]["isMobile"] == 1
     assert body["user"]["modules"] == ["development"]
 
     me = client.get(
@@ -780,6 +984,7 @@ def test_login_and_me_report_module_access(client):
     assert me.get_json()["user"]["isFsNxt"] == 1
     assert me.get_json()["user"]["isSapFsNxt"] == 0
     assert me.get_json()["user"]["isDataMigration"] == 1
+    assert me.get_json()["user"]["isMobile"] == 1
     assert me.get_json()["user"]["modules"] == ["development"]
 
     assert client.get("/api/me").status_code == 401

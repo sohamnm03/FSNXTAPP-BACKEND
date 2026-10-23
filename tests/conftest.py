@@ -26,6 +26,7 @@ def app():
             "isFsNxt": 1,
             "isSapFsNxt": 0,
             "isDataMigration": 1,
+            "isMobile": 1,
             "created_at": datetime(2026, 9, 9, 10, 30, 0),
             "updated_at": datetime(2026, 9, 9, 11, 45, 0),
         }
@@ -62,6 +63,13 @@ def app():
             "lane": "lane-1",
         },
     ]
+    versions = [
+        {
+            "my_row_id": 1,
+            "from": "1.0.0",
+            "to": "2.0.0",
+        }
+    ]
     user = {
         "id": 1,
         "username": "tester",
@@ -75,6 +83,7 @@ def app():
         "isFsNxt": 1,
         "isSapFsNxt": 0,
         "isDataMigration": 1,
+        "isMobile": 1,
     }
     def verify_google_token(credential, audience, clock_skew_in_seconds):
         assert audience.endswith(".apps.googleusercontent.com")
@@ -116,6 +125,7 @@ def app():
         is_fs_nxt,
         is_sap_fs_nxt,
         is_data_migration,
+        is_mobile,
     ):
         existing = next(
             (item for item in users if item["email"].lower() == email.lower()),
@@ -135,6 +145,7 @@ def app():
             "isFsNxt": int(is_fs_nxt),
             "isSapFsNxt": int(is_sap_fs_nxt),
             "isDataMigration": int(is_data_migration),
+            "isMobile": int(is_mobile),
         }
         upserted_users.append(record)
         return user_id, created
@@ -163,6 +174,20 @@ def app():
             log for log in logs if log["username"].lower() == username.lower()
         ]
 
+    def fetch_version_record():
+        if not versions:
+            return None
+        return {
+            "from": versions[0]["from"],
+            "to": versions[0]["to"],
+        }
+
+    def update_version_record(version_from, version_to):
+        if not versions:
+            return False
+        versions[0].update({"from": version_from, "to": version_to})
+        return True
+
     return create_app(
         {
             "TESTING": True,
@@ -178,6 +203,8 @@ def app():
                 lambda email: user if email == user["email"] else None
             ),
             "VERSION_CHECKER": lambda version: True,
+            "VERSION_FETCHER": fetch_version_record,
+            "VERSION_UPDATER": update_version_record,
             "USERS_FETCHER": lambda: users,
             "USER_UPSERTER": upsert_user_record,
             "USER_DELETER": delete_user_record,

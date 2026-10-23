@@ -62,7 +62,7 @@ def _find_user(column: str, value: str) -> dict | None:
             cursor.execute(
                 f"""
                 SELECT id, username, email, isAdmin, isActive, isDev, isTesting,
-                       isConfig, isFsNxt, isSapFsNxt, isDataMigration
+                       isConfig, isFsNxt, isSapFsNxt, isDataMigration, isMobile
                 FROM users
                 WHERE LOWER({column}) = LOWER(%s)
                 LIMIT 1
@@ -141,6 +141,84 @@ def is_version_supported(version: Version) -> bool:
     return version_matches_ranges(version, fetch_valid_version_ranges())
 
 
+def fetch_version() -> dict | None:
+    """Return the single version row managed through the API."""
+    connection = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        connection_timeout=10,
+    )
+    try:
+        cursor = connection.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                """
+                SELECT `from`, `to`
+                FROM valid_versions
+                ORDER BY my_row_id
+                LIMIT 1
+                """
+            )
+            return cursor.fetchone()
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
+def update_version(
+    version_from: str,
+    version_to: str,
+) -> bool:
+    """Update the single existing version row without creating a new row."""
+    connection = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        connection_timeout=10,
+    )
+    try:
+        cursor = connection.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                """
+                SELECT my_row_id
+                FROM valid_versions
+                ORDER BY my_row_id
+                LIMIT 1
+                FOR UPDATE
+                """
+            )
+            existing_version = cursor.fetchone()
+            if existing_version is None:
+                connection.rollback()
+                return False
+
+            row_id = int(existing_version["my_row_id"])
+            cursor.execute(
+                """
+                UPDATE valid_versions
+                SET `from` = %s, `to` = %s
+                WHERE my_row_id = %s
+                """,
+                (version_from, version_to, row_id),
+            )
+            connection.commit()
+            return True
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
 def fetch_users() -> list[dict]:
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
@@ -157,7 +235,7 @@ def fetch_users() -> list[dict]:
                 """
                 SELECT username, email, isActive, created_at, updated_at, full_name,
                        isDev, isTesting, isConfig, isFsNxt, isSapFsNxt,
-                       isDataMigration
+                       isDataMigration, isMobile
                 FROM users
                 ORDER BY created_at DESC, id DESC
                 """
@@ -180,6 +258,7 @@ def upsert_user(
     is_fs_nxt: bool,
     is_sap_fs_nxt: bool,
     is_data_migration: bool,
+    is_mobile: bool,
 ) -> tuple[int, bool]:
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
@@ -213,7 +292,7 @@ def upsert_user(
                     SET username = %s, email = %s, full_name = %s, isActive = %s,
                         isDev = %s, isTesting = %s, isConfig = %s,
                         isFsNxt = %s, isSapFsNxt = %s, isDataMigration = %s,
-                        updated_at = %s
+                        isMobile = %s, updated_at = %s
                     WHERE id = %s
                     """,
                     (
@@ -227,6 +306,7 @@ def upsert_user(
                         1 if is_fs_nxt else 0,
                         1 if is_sap_fs_nxt else 0,
                         1 if is_data_migration else 0,
+                        1 if is_mobile else 0,
                         current_time,
                         user_id,
                     ),
@@ -237,9 +317,9 @@ def upsert_user(
                     """
                     INSERT INTO users
                         (username, email, full_name, isActive, isDev, isTesting,
-                         isConfig, isFsNxt, isSapFsNxt, isDataMigration,
+                         isConfig, isFsNxt, isSapFsNxt, isDataMigration, isMobile,
                          created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         username,
@@ -252,6 +332,7 @@ def upsert_user(
                         1 if is_fs_nxt else 0,
                         1 if is_sap_fs_nxt else 0,
                         1 if is_data_migration else 0,
+                        1 if is_mobile else 0,
                         current_time,
                         current_time,
                     ),
@@ -497,6 +578,7 @@ def user_access(user: dict) -> dict:
     is_fs_nxt = int(user.get("isFsNxt") or 0)
     is_sap_fs_nxt = int(user.get("isSapFsNxt") or 0)
     is_data_migration = int(user.get("isDataMigration") or 0)
+    is_mobile = int(user.get("isMobile") or 0)
     return {
         "isDev": is_dev,
         "isTesting": is_testing,
@@ -504,6 +586,7 @@ def user_access(user: dict) -> dict:
         "isFsNxt": is_fs_nxt,
         "isSapFsNxt": is_sap_fs_nxt,
         "isDataMigration": is_data_migration,
+        "isMobile": is_mobile,
         "modules": [
             name
             for name, enabled in (("development", is_dev), ("testing", is_testing))
@@ -575,6 +658,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         USER_LOOKUP_BY_USERNAME=find_user_by_username,
         USER_LOOKUP_BY_EMAIL=find_user_by_email,
         VERSION_CHECKER=is_version_supported,
+        VERSION_FETCHER=fetch_version,
+        VERSION_UPDATER=update_version,
         USERS_FETCHER=fetch_users,
         USER_UPSERTER=upsert_user,
         USER_DELETER=delete_user_by_email,
@@ -620,6 +705,75 @@ def create_app(test_config: dict | None = None) -> Flask:
                 403,
             )
         return str(version), None
+
+    @app.get("/api/versions")
+    def get_version():
+        try:
+            version = app.config["VERSION_FETCHER"]()
+        except (mysql.connector.Error, KeyError, TypeError, ValueError):
+            app.logger.exception("Database lookup failed while fetching version")
+            return jsonify(
+                {"success": False, "message": "Version service is unavailable."}
+            ), 503
+
+        if version is None:
+            return jsonify(
+                {"success": False, "message": "Version entry not found."}
+            ), 404
+
+        return jsonify({"success": True, "version": version})
+
+    @app.post("/api/versions")
+    def update_version_endpoint():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "message": "Invalid request body."}), 400
+
+        version_from = parse_version(data.get("from"))
+        version_to = parse_version(data.get("to"))
+        if version_from is None or version_to is None:
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "from and to must be valid version strings.",
+                }
+            ), 400
+        if version_from > version_to:
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "from version cannot be greater than to version.",
+                }
+            ), 400
+
+        version_from_text = str(version_from)
+        version_to_text = str(version_to)
+        try:
+            updated = app.config["VERSION_UPDATER"](
+                version_from_text,
+                version_to_text,
+            )
+        except (mysql.connector.Error, KeyError, TypeError, ValueError):
+            app.logger.exception("Database update failed while updating version")
+            return jsonify(
+                {"success": False, "message": "Version service is unavailable."}
+            ), 503
+
+        if not updated:
+            return jsonify(
+                {"success": False, "message": "Version entry not found."}
+            ), 404
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "Version updated successfully.",
+                "version": {
+                    "from": version_from_text,
+                    "to": version_to_text,
+                },
+            }
+        )
 
     @app.get("/api/me")
     def get_me():
@@ -681,6 +835,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                         "isFsNxt": int(user.get("isFsNxt") or 0),
                         "isSapFsNxt": int(user.get("isSapFsNxt") or 0),
                         "isDataMigration": int(user.get("isDataMigration") or 0),
+                        "isMobile": int(user.get("isMobile") or 0),
                         "modules": user_access(user)["modules"],
                         "created_at": (
                             user["created_at"].isoformat()
@@ -731,6 +886,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             "isFsNxt",
             "isSapFsNxt",
             "isDataMigration",
+            "isMobile",
         )
         for field in permission_fields:
             value = data.get(field)
@@ -762,6 +918,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                 flags["isFsNxt"],
                 flags["isSapFsNxt"],
                 flags["isDataMigration"],
+                flags["isMobile"],
             )
         except mysql.connector.IntegrityError:
             return jsonify(
@@ -791,6 +948,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                     "isFsNxt": int(flags["isFsNxt"]),
                     "isSapFsNxt": int(flags["isSapFsNxt"]),
                     "isDataMigration": int(flags["isDataMigration"]),
+                    "isMobile": int(flags["isMobile"]),
                 },
             }
         ), 201 if created else 200

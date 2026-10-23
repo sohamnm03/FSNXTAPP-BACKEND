@@ -354,6 +354,7 @@ def test_upsert_user_creates_new_user(client, app):
             "isSapFsNxt": False,
             "isDataMigration": False,
             "isMobile": False,
+            "isDeploy": False,
         },
     ).status_code == 400
     assert client.post(
@@ -369,6 +370,7 @@ def test_upsert_user_creates_new_user(client, app):
             "isSapFsNxt": False,
             "isDataMigration": False,
             "isMobile": False,
+            "isDeploy": False,
         },
     ).status_code == 400
     assert client.post(
@@ -384,6 +386,7 @@ def test_upsert_user_creates_new_user(client, app):
             "isFsNxt": False,
             "isSapFsNxt": False,
             "isDataMigration": False,
+            "isDeploy": False,
         },
     ).status_code == 400
 
@@ -401,6 +404,7 @@ def test_upsert_user_creates_new_user(client, app):
             "isSapFsNxt": False,
             "isDataMigration": True,
             "isMobile": True,
+            "isDeploy": True,
         },
     )
 
@@ -421,6 +425,7 @@ def test_upsert_user_creates_new_user(client, app):
         "isSapFsNxt": 0,
         "isDataMigration": 1,
         "isMobile": 1,
+        "isDeploy": 1,
     }
     assert app.config["UPSERTED_USERS"][0] == body["user"]
 
@@ -440,6 +445,7 @@ def test_upsert_user_updates_existing_email_and_accepts_database_flags(client):
             "isSapFsNxt": 1,
             "isDataMigration": 0,
             "isMobile": 1,
+            "isDeploy": 0,
         },
     )
 
@@ -460,6 +466,7 @@ def test_upsert_user_updates_existing_email_and_accepts_database_flags(client):
             "isSapFsNxt": 1,
             "isDataMigration": 0,
             "isMobile": 1,
+            "isDeploy": 0,
         },
     }
 
@@ -512,13 +519,14 @@ def test_database_upsert_updates_every_payload_field_for_existing_email(monkeypa
         False,
         True,
         True,
+        False,
     )
 
     assert (user_id, created) == (7, False)
     assert connection.committed is True
     update_statement, update_parameters = statements[1]
     assert "SET username = %s, email = %s, full_name = %s" in update_statement
-    assert "isDataMigration = %s, isMobile = %s" in update_statement
+    assert "isDataMigration = %s, isMobile = %s, isDeploy = %s" in update_statement
     assert update_parameters == (
         "Adil",
         "adil.a@fourthsignal.com",
@@ -531,12 +539,13 @@ def test_database_upsert_updates_every_payload_field_for_existing_email(monkeypa
         0,
         1,
         1,
+        0,
         "2026-10-12 12:00:00",
         7,
     )
 
 
-def test_database_upsert_inserts_is_mobile_for_new_user(monkeypatch):
+def test_database_upsert_inserts_mobile_and_deploy_flags_for_new_user(monkeypatch):
     statements = []
 
     class Cursor:
@@ -584,11 +593,12 @@ def test_database_upsert_inserts_is_mobile_for_new_user(monkeypatch):
         False,
         False,
         True,
+        True,
     )
 
     assert (user_id, created) == (8, True)
     insert_statement, insert_parameters = statements[1]
-    assert "isDataMigration, isMobile" in insert_statement
+    assert "isDataMigration, isMobile, isDeploy" in insert_statement
     assert insert_parameters == (
         "Mobile User",
         "mobile@example.com",
@@ -600,6 +610,7 @@ def test_database_upsert_inserts_is_mobile_for_new_user(monkeypatch):
         1,
         0,
         0,
+        1,
         1,
         "2026-10-12 12:00:00",
         "2026-10-12 12:00:00",
@@ -621,6 +632,7 @@ def test_upsert_user_accepts_full_name_camel_case(client, app):
             "isSapFsNxt": False,
             "isDataMigration": False,
             "isMobile": False,
+            "isDeploy": False,
         },
     )
 
@@ -648,6 +660,7 @@ def test_upsert_user_handles_database_conflict(client, app):
             "isSapFsNxt": False,
             "isDataMigration": True,
             "isMobile": True,
+            "isDeploy": True,
         },
     )
 
@@ -674,6 +687,7 @@ def test_upsert_user_handles_database_error(client, app):
             "isSapFsNxt": False,
             "isDataMigration": True,
             "isMobile": True,
+            "isDeploy": True,
         },
     )
 
@@ -809,6 +823,7 @@ def test_get_users(client):
                 "isSapFsNxt": 0,
                 "isDataMigration": 1,
                 "isMobile": 1,
+                "isDeploy": 1,
                 "modules": [],
                 "created_at": "2026-09-09T10:30:00",
                 "updated_at": "2026-09-09T11:45:00",
@@ -974,6 +989,7 @@ def test_login_and_me_report_module_access(client):
     assert body["user"]["isSapFsNxt"] == 0
     assert body["user"]["isDataMigration"] == 1
     assert body["user"]["isMobile"] == 1
+    assert body["user"]["isDeploy"] == 1
     assert body["user"]["modules"] == ["development"]
 
     me = client.get(
@@ -985,6 +1001,7 @@ def test_login_and_me_report_module_access(client):
     assert me.get_json()["user"]["isSapFsNxt"] == 0
     assert me.get_json()["user"]["isDataMigration"] == 1
     assert me.get_json()["user"]["isMobile"] == 1
+    assert me.get_json()["user"]["isDeploy"] == 1
     assert me.get_json()["user"]["modules"] == ["development"]
 
     assert client.get("/api/me").status_code == 401

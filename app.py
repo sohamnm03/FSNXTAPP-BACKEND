@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import os
 import time
 from datetime import datetime
@@ -22,6 +23,18 @@ from dotenv import load_dotenv
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from packaging.version import InvalidVersion, Version
 from werkzeug.security import check_password_hash
+
+from fs_access import is_admin as user_is_admin_flag
+from fs_access import parse_admin_emails, parse_switch, passes_enabled
+from fs_routes import (
+    default_clock,
+    has_bearer,
+    issue_session,
+    register_fs_routes,
+    resolve_caller,
+    user_is_admin,
+)
+
 load_dotenv()
 
 DEFAULT_GOOGLE_CLIENT_ID = (
@@ -35,6 +48,12 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 LOOPBACK_REDIRECT_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 IST = ZoneInfo("Asia/Kolkata")
+logger = logging.getLogger(__name__)
+# An open version end is stored as these values (no schema change) and read back as null.
+OPEN_VERSION_FROM = "0.0.0"
+OPEN_VERSION_TO = "9999.9999.9999"
+PASS_TTL_MIN_SECONDS = 300
+PASS_TTL_MAX_SECONDS = 86_400
 
 
 def get_current_ist_time() -> datetime:
@@ -236,7 +255,7 @@ def fetch_users() -> list[dict]:
                 """
                 SELECT username, email, isActive, created_at, updated_at, full_name,
                        isDev, isTesting, isConfig, isFsNxt, isSapFsNxt,
-                       isDataMigration, isMobile, isDeploy
+                       isDataMigration, isMobile, isDeploy, isAdmin
                 FROM users
                 ORDER BY created_at DESC, id DESC
                 """
@@ -259,9 +278,17 @@ def upsert_user(
     is_fs_nxt: bool,
     is_sap_fs_nxt: bool,
     is_data_migration: bool,
-    is_mobile: bool,
-    is_deploy: bool,
+    is_mobile: bool | None,
+    is_deploy: bool | None,
+    is_admin: bool | None = None,
 ) -> tuple[int, bool]:
+    """Create or update a user by email. A None optional flag (isMobile, isDeploy, isAdmin)
+    is left as stored on update and not written on insert (0 for isMobile/isDeploy)."""
+    optional = [
+        (column, value)
+        for column, value in (("isMobile", is_mobile), ("isDeploy", is_deploy), ("isAdmin", is_admin))
+        if value is not None
+    ]
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
         user=os.environ["DB_USER"],
@@ -288,13 +315,14 @@ def upsert_user(
 
             if existing_user:
                 user_id = int(existing_user["id"])
+                optional_set = "".join(f", {column} = %s" for column, _ in optional)
                 cursor.execute(
-                    """
+                    f"""
                     UPDATE users
                     SET username = %s, email = %s, full_name = %s, isActive = %s,
                         isDev = %s, isTesting = %s, isConfig = %s,
-                        isFsNxt = %s, isSapFsNxt = %s, isDataMigration = %s,
-                        isMobile = %s, isDeploy = %s, updated_at = %s
+                        isFsNxt = %s, isSapFsNxt = %s, isDataMigration = %s{optional_set},
+                        updated_at = %s
                     WHERE id = %s
                     """,
                     (
@@ -308,21 +336,22 @@ def upsert_user(
                         1 if is_fs_nxt else 0,
                         1 if is_sap_fs_nxt else 0,
                         1 if is_data_migration else 0,
-                        1 if is_mobile else 0,
-                        1 if is_deploy else 0,
+                        *(1 if value else 0 for _, value in optional),
                         current_time,
                         user_id,
                     ),
                 )
                 created = False
             else:
+                admin_column = ", isAdmin" if is_admin is not None else ""
+                admin_value = (1 if is_admin else 0,) if is_admin is not None else ()
                 cursor.execute(
-                    """
+                    f"""
                     INSERT INTO users
                         (username, email, full_name, isActive, isDev, isTesting,
                          isConfig, isFsNxt, isSapFsNxt, isDataMigration, isMobile,
-                         isDeploy, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         isDeploy{admin_column}, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s{", %s" if admin_value else ""}, %s, %s)
                     """,
                     (
                         username,
@@ -337,6 +366,7 @@ def upsert_user(
                         1 if is_data_migration else 0,
                         1 if is_mobile else 0,
                         1 if is_deploy else 0,
+                        *admin_value,
                         current_time,
                         current_time,
                     ),
@@ -601,6 +631,46 @@ def user_access(user: dict) -> dict:
     }
 
 
+def sign_in_user(app: Flask, user: dict) -> dict:
+    """The user object of a sign-in or renewal answer; `isAdmin` also counts ADMIN_EMAILS."""
+    admin = user_is_admin_flag(user, app.config.get("ADMIN_EMAILS") or frozenset())
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "email": user["email"],
+        "isActive": 1 if bool(user.get("isActive")) else 0,
+        "isAdmin": 1 if admin else 0,
+        "role": "admin" if admin else "user",
+        **user_access(user),
+    }
+
+
+def env_int(name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
+    try:
+        value = max(minimum, int(os.environ.get(name, str(default))))
+    except ValueError:
+        return default
+    return min(value, maximum) if maximum is not None else value
+
+
+def open_reads_setting() -> bool:
+    """LEGACY_OPEN_READS (default on): 1/true/yes/on open, 0/false/no/off closed (any case).
+    Anything else is closed (fail safe) and logged."""
+    raw = os.environ.get("LEGACY_OPEN_READS")
+    value, understood = parse_switch(raw, default=True)
+    if not understood:
+        logger.warning("LEGACY_OPEN_READS=%r is not understood; treating it as closed", raw)
+    if os.environ.get("LEGACY_OPEN_API") is not None:
+        logger.warning("LEGACY_OPEN_API is no longer read; use LEGACY_OPEN_READS (anonymous reads only)")
+    return value
+
+
+def stored_version_end(value: object, sentinel: str) -> object:
+    """A stored end as the API shows it: the open-end sentinel reads back as null."""
+    parsed = parse_version(value) if isinstance(value, str) else None
+    return None if parsed is not None and parsed == Version(sentinel) else value
+
+
 def create_auth_response(app: Flask, user: dict, message: str) -> dict:
     serializer = URLSafeTimedSerializer(app.config["AUTH_SECRET"], salt="backend-auth")
     return {
@@ -611,13 +681,7 @@ def create_auth_response(app: Flask, user: dict, message: str) -> dict:
         ),
         "token_type": "Bearer",
         "expires_in": app.config["AUTH_TOKEN_MAX_AGE"],
-        "user": {
-            "id": user["id"],
-            "username": user["username"],
-            "email": user["email"],
-            "isAdmin": int(user.get("isAdmin") or 0),
-            **user_access(user),
-        },
+        "user": sign_in_user(app, user),
     }
 
 
@@ -672,14 +736,45 @@ def create_app(test_config: dict | None = None) -> Flask:
         LOGS_FETCHER=fetch_logs,
         LOGS_FOR_USER_FETCHER=fetch_logs_for_username,
         LOG_INSERTER=insert_log,
+        # FS Sprint passes, rules and team files (see DEPLOY_NOTES.md).
+        CLOCK=default_clock,
+        ADMIN_EMAILS=parse_admin_emails(os.environ.get("ADMIN_EMAILS")),
+        PASS_TTL_SECONDS=env_int("PASS_TTL_SECONDS", 5400, minimum=PASS_TTL_MIN_SECONDS,
+                                 maximum=PASS_TTL_MAX_SECONDS),
+        TICKET_MAX_DAYS=env_int("TICKET_MAX_DAYS", 7),
+        FS_AUTH_CONTAINER=os.environ.get("FS_AUTH_CONTAINER", "").strip() or "fs-auth",
+        FS_RULES_CONTAINER=os.environ.get("FS_RULES_CONTAINER", "").strip() or "fs-rules",
+        FS_FILES_CONTAINER=os.environ.get("FS_FILES_CONTAINER", "").strip() or "fs-files",
+        # Anonymous READS of the installed 0.3.22 (GET /api/users, POST /api/logs). Writes to users
+        # and versions always need an admin pass, whatever this says.
+        LEGACY_OPEN_READS=open_reads_setting(),
+        BLOB_STORE=None,  # tests and local_runner.py only; Azure builds its store from the settings
+        BLOB_STORE_FACTORY=None,
+        RULES_MAX_BYTES=10 * 1024 * 1024,
+        FILES_MAX_BYTES=20 * 1024 * 1024,
+        FILES_PAGE_SIZE=5000,
         TESTING=False,
     )
     if test_config:
         app.config.update(test_config)
     CORS(app)
+    logger.info(
+        "LEGACY_OPEN_READS is %s: anonymous GET /api/users and POST /api/logs are %s; "
+        "user and version writes always need an admin pass",
+        "open" if app.config["LEGACY_OPEN_READS"] else "closed",
+        "allowed" if app.config["LEGACY_OPEN_READS"] else "refused",
+    )
+    if not passes_enabled(app.config.get("AUTH_SECRET")):
+        logger.warning(
+            "AUTH_SECRET is missing, the development default or shorter than 32 characters: "
+            "FS Sprint passes are disabled (no pass is issued or accepted)"
+        )
 
-    def validate_requested_version(data: dict):
-        version = parse_version(data.get("version"))
+    def validate_requested_version(data: dict, missing_status: int = 400):
+        requested = data.get("version")
+        if requested is None:
+            requested = request.headers.get("X-FS-Sprint-Version")
+        version = parse_version(requested)
         if version is None:
             return None, (
                 jsonify(
@@ -688,7 +783,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                         "message": "A valid version string is required.",
                     }
                 ),
-                400,
+                missing_status,
             )
 
         try:
@@ -712,6 +807,31 @@ def create_app(test_config: dict | None = None) -> Flask:
             )
         return str(version), None
 
+    def version_refusal(data: dict, user: dict, missing_status: int = 400):
+        """None when the user may use this version. Admins are never refused (lockout fix)."""
+        if user_is_admin(app, user):
+            return None
+        _, error = validate_requested_version(data, missing_status)
+        return error
+
+    def guard(*, needs_admin: bool, message: str):
+        """Users, versions and logs. Writes (needs_admin) always need an admin pass. Otherwise a
+        Bearer pass is always checked; without one the call is open only while LEGACY_OPEN_READS
+        is on. Returns (caller or None, error response or None)."""
+        if has_bearer() or needs_admin:
+            caller, error = resolve_caller(app)
+            if error:
+                return None, error
+            if needs_admin and not caller.admin:
+                return None, (jsonify({"success": False, "message": message}), 403)
+            return caller, None
+        if app.config["LEGACY_OPEN_READS"]:
+            return None, None
+        return None, (
+            jsonify({"success": False, "message": "Your FS Sprint pass is missing or has expired."}),
+            401,
+        )
+
     @app.get("/api/versions")
     def get_version():
         try:
@@ -727,16 +847,30 @@ def create_app(test_config: dict | None = None) -> Flask:
                 {"success": False, "message": "Version entry not found."}
             ), 404
 
+        if isinstance(version, dict):
+            version = {
+                **version,
+                "from": stored_version_end(version.get("from"), OPEN_VERSION_FROM),
+                "to": stored_version_end(version.get("to"), OPEN_VERSION_TO),
+            }
         return jsonify({"success": True, "version": version})
 
     @app.post("/api/versions")
     def update_version_endpoint():
+        _, error = guard(needs_admin=True, message="Only the administrator can change the allowed versions.")
+        if error:
+            return error
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"success": False, "message": "Invalid request body."}), 400
 
-        version_from = parse_version(data.get("from"))
-        version_to = parse_version(data.get("to"))
+        def end(value: object, sentinel: str) -> Version | None:
+            if value is None or (isinstance(value, str) and not value.strip()):
+                return Version(sentinel)  # an open end
+            return parse_version(value)
+
+        version_from = end(data.get("from"), OPEN_VERSION_FROM)
+        version_to = end(data.get("to"), OPEN_VERSION_TO)
         if version_from is None or version_to is None:
             return jsonify(
                 {
@@ -752,8 +886,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                 }
             ), 400
 
-        version_from_text = str(version_from)
-        version_to_text = str(version_to)
+        version_from_text = OPEN_VERSION_FROM if version_from == Version(OPEN_VERSION_FROM) else str(version_from)
+        version_to_text = OPEN_VERSION_TO if version_to == Version(OPEN_VERSION_TO) else str(version_to)
         try:
             updated = app.config["VERSION_UPDATER"](
                 version_from_text,
@@ -775,8 +909,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                 "success": True,
                 "message": "Version updated successfully.",
                 "version": {
-                    "from": version_from_text,
-                    "to": version_to_text,
+                    "from": stored_version_end(version_from_text, OPEN_VERSION_FROM),
+                    "to": stored_version_end(version_to_text, OPEN_VERSION_TO),
                 },
             }
         )
@@ -820,6 +954,9 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.get("/api/users")
     def get_users():
+        _, error = guard(needs_admin=False, message="")
+        if error:
+            return error
         try:
             users = app.config["USERS_FETCHER"]()
         except (mysql.connector.Error, KeyError, ValueError):
@@ -843,6 +980,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                         "isDataMigration": int(user.get("isDataMigration") or 0),
                         "isMobile": int(user.get("isMobile") or 0),
                         "isDeploy": int(user.get("isDeploy") or 0),
+                        "isAdmin": 1 if user_is_admin(app, user) else 0,
                         "modules": user_access(user)["modules"],
                         "created_at": (
                             user["created_at"].isoformat()
@@ -862,6 +1000,9 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.post("/api/users")
     def upsert_user_endpoint():
+        caller, error = guard(needs_admin=True, message="Only the administrator can change users.")
+        if error:
+            return error
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"success": False, "message": "Invalid request body."}), 400
@@ -895,10 +1036,15 @@ def create_app(test_config: dict | None = None) -> Flask:
             "isDataMigration",
             "isMobile",
             "isDeploy",
+            "isAdmin",
         )
+        # Left out: kept as stored (0 for a new user). isAdmin only counts from an admin pass.
+        optional_fields = {"isMobile", "isDeploy", "isAdmin"}
         for field in permission_fields:
             value = data.get(field)
-            if isinstance(value, bool):
+            if value is None and field in optional_fields:
+                flags[field] = None
+            elif isinstance(value, bool):
                 flags[field] = value
             elif isinstance(value, int) and value in (0, 1):
                 flags[field] = bool(value)
@@ -928,6 +1074,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                 flags["isDataMigration"],
                 flags["isMobile"],
                 flags["isDeploy"],
+                flags["isAdmin"] if caller is not None and caller.admin else None,
             )
         except mysql.connector.IntegrityError:
             return jsonify(
@@ -957,14 +1104,25 @@ def create_app(test_config: dict | None = None) -> Flask:
                     "isFsNxt": int(flags["isFsNxt"]),
                     "isSapFsNxt": int(flags["isSapFsNxt"]),
                     "isDataMigration": int(flags["isDataMigration"]),
-                    "isMobile": int(flags["isMobile"]),
-                    "isDeploy": int(flags["isDeploy"]),
+                    **{
+                        field: int(flags[field])
+                        for field in ("isMobile", "isDeploy")
+                        if flags[field] is not None
+                    },
+                    **(
+                        {"isAdmin": int(flags["isAdmin"])}
+                        if caller is not None and caller.admin and flags["isAdmin"] is not None
+                        else {}
+                    ),
                 },
             }
         ), 201 if created else 200
 
     @app.delete("/api/users")
     def delete_user_endpoint():
+        _, error = guard(needs_admin=True, message="Only the administrator can change users.")
+        if error:
+            return error
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"success": False, "message": "Invalid request body."}), 400
@@ -1003,22 +1161,20 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.get("/api/logs")
     def get_logs():
-        username = request.args.get("username", "")
-        if not isinstance(username, str) or not username.strip():
-            return jsonify({"success": False, "message": "username is required."}), 400
-
-        username = username.strip()
-        if len(username) > 100:
-            return jsonify({"success": False, "message": "username exceeds maximum length."}), 400
-
+        """A pass is required. An admin gets every log; anyone else gets their own (the username
+        comes from the pass's user row; a `username` query parameter is ignored)."""
+        caller, error = resolve_caller(app)
+        if error:
+            return error
         try:
-            logs = app.config["LOGS_FOR_USER_FETCHER"](username)
+            if caller.admin:
+                logs = app.config["LOGS_FETCHER"]()
+            else:
+                username = str(caller.user.get("username") or "").strip()
+                logs = app.config["LOGS_FOR_USER_FETCHER"](username) if username else []
         except (mysql.connector.Error, KeyError, ValueError):
             app.logger.exception("Database lookup failed while fetching logs")
             return jsonify({"success": False, "message": "Log service is unavailable."}), 503
-
-        if logs is None:
-            return jsonify({"success": False, "message": "User not found."}), 404
 
         return jsonify(
             {
@@ -1032,16 +1188,22 @@ def create_app(test_config: dict | None = None) -> Flask:
                         )
                         for key, value in log.items()
                     }
-                    for log in logs
+                    for log in logs or []
                 ],
             }
         )
 
     @app.post("/api/logs")
     def create_log():
+        """With a pass, the username is the pass's own. Without one, only while LEGACY_OPEN_READS is on."""
+        caller, error = guard(needs_admin=False, message="")
+        if error:
+            return error
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"success": False, "message": "Invalid request body."}), 400
+        if caller is not None:
+            data = {**data, "username": str(caller.user.get("username") or caller.email)}
 
         field_limits = {"username": 100, "client": 100, "TC": 100, "path": 500, "lane": 100}
         values = {field: data.get(field) for field in field_limits}
@@ -1203,6 +1365,10 @@ def create_app(test_config: dict | None = None) -> Flask:
         ):
             return jsonify({"success": False, "message": "Google authorization details are missing."}), 400
 
+        if code.strip().lower().startswith("e2e:"):
+            # The FS Sprint test fake's code form; the real function always asks Google.
+            return jsonify({"success": False, "message": "Google authorization details are invalid."}), 400
+
         parsed_redirect = urlparse(redirect_uri)
         if parsed_redirect.scheme != "http" or parsed_redirect.hostname not in LOOPBACK_REDIRECT_HOSTS:
             return jsonify({"success": False, "message": "Invalid redirect URI."}), 400
@@ -1273,12 +1439,22 @@ def create_app(test_config: dict | None = None) -> Flask:
                 }
             ), 403
 
-        _, version_error = validate_requested_version(data)
+        version_error = version_refusal(data, user)
         if version_error:
             return version_error
 
-        return jsonify(create_auth_response(app, user, "Google login successful."))
+        return jsonify(
+            {
+                **create_auth_response(app, user, "Google login successful."),
+                **issue_session(app, user),
+            }
+        )
 
+    register_fs_routes(
+        app,
+        user_payload=lambda user: sign_in_user(app, user),
+        version_refusal=lambda data, user: version_refusal(data, user, missing_status=403),
+    )
     return app
 
 

@@ -117,3 +117,26 @@ az functionapp config appsettings set -n fsnxt-app-function -g FS_ERP --settings
   DB_HOST=<value> DB_USER=<value> DB_PASSWORD=<value> DB_NAME=<value> DB_PORT=3306 `
   AUTH_SECRET=<value> GOOGLE_SSO_CLIENT_ID=<value>
 ```
+
+## FS Sprint passes, rules and team files
+
+See `DEPLOY_NOTES.md` for the new app settings, the storage containers and the cut-over order.
+
+- `POST /api/auth/google/desktop` also returns `session: { pass, expiresAt }` and
+  `renewal: { ticket, expiresAt }`; `user` carries `isAdmin` and `role`. Admins are never
+  refused for the app version. Codes of the form `e2e:<email>` are always refused.
+- `POST /api/auth/renew` `{ ticket, version }` → new `user`, `session` and a rotated `renewal`
+  (401 unknown/expired ticket, 403 removed user or refused version).
+- `POST /api/auth/signout` `{ ticket }` → 204.
+- With `Authorization: Bearer <pass>`: `GET /api/health`, `GET /api/rules`,
+  `GET|PUT /api/rules/<name>` (PUT admin only), `GET /api/files?prefix=&continuation=`,
+  `GET|PUT|DELETE /api/files/<path>` (ETag, `If-Match`, `If-None-Match`, 412 on conflict).
+- User and version writes (`POST`/`DELETE /api/users`, `POST /api/versions`) always need an admin
+  pass. `LEGACY_OPEN_READS` (default on) keeps only the anonymous reads of the installed 0.3.22
+  (`GET /api/users`, `POST /api/logs`). `GET /api/logs` needs a pass.
+
+Local check without MySQL, Azure or Google (developer PC only):
+
+```powershell
+.venv\Scripts\python local_runner.py --port 7071 --admin owner@example.com --user dev@example.com
+```

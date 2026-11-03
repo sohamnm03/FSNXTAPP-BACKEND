@@ -5,6 +5,42 @@ from datetime import datetime
 import pytest
 from google.auth.exceptions import TransportError
 from app import create_app
+from fs_access import issue_pass
+
+ADMIN_ROW = {
+    "id": 2,
+    "username": "admin",
+    "email": "admin@example.com",
+    "full_name": "Admin User",
+    "isActive": 1,
+    "isAdmin": 1,
+}
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(monkeypatch):
+    """Dummy DB settings (the DB driver is always mocked) and no real storage or admin settings,
+    whatever a local .env holds."""
+    for name, value in (
+        ("DB_HOST", "test-db-host"),
+        ("DB_USER", "test-db-user"),
+        ("DB_PASSWORD", "test-db-password"),
+        ("DB_NAME", "test-db-name"),
+    ):
+        monkeypatch.setenv(name, value)
+    for name in (
+        "FS_STORAGE_CONNECTION_STRING",
+        "FS_STORAGE_ACCOUNT_URL",
+        "ADMIN_EMAILS",
+        "LEGACY_OPEN_API",
+        "LEGACY_OPEN_READS",
+        "PASS_TTL_SECONDS",
+        "TICKET_MAX_DAYS",
+        "FS_AUTH_CONTAINER",
+        "FS_RULES_CONTAINER",
+        "FS_FILES_CONTAINER",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
@@ -129,6 +165,7 @@ def app():
         is_data_migration,
         is_mobile,
         is_deploy,
+        is_admin=None,
     ):
         existing = next(
             (item for item in users if item["email"].lower() == email.lower()),
@@ -151,6 +188,8 @@ def app():
             "isMobile": int(is_mobile),
             "isDeploy": int(is_deploy),
         }
+        if is_admin is not None:
+            record["isAdmin"] = int(is_admin)
         upserted_users.append(record)
         return user_id, created
 
@@ -195,7 +234,7 @@ def app():
     return create_app(
         {
             "TESTING": True,
-            "AUTH_SECRET": "test-signing-secret",
+            "AUTH_SECRET": "test-signing-secret-at-least-32-characters",
             "GOOGLE_TOKEN_VERIFIER": verify_google_token,
             "GOOGLE_DESKTOP_CLIENT_ID": "418759424186-vhvn6f4g6ckvef5gvjdtqi4g6gvfmvpe.apps.googleusercontent.com",
             "GOOGLE_DESKTOP_CLIENT_SECRET": "test-desktop-secret",
@@ -203,8 +242,10 @@ def app():
             "USER_LOOKUP_BY_USERNAME": (
                 lambda username: user if username == user["username"] else None
             ),
+            # The admin row (log_users) also resolves, so admin passes work (fixture admin_client).
             "USER_LOOKUP_BY_EMAIL": (
-                lambda email: user if email == user["email"] else None
+                lambda email: user if email == user["email"]
+                else ADMIN_ROW if email == ADMIN_ROW["email"] else None
             ),
             "VERSION_CHECKER": lambda version: True,
             "VERSION_FETCHER": fetch_version_record,
@@ -212,6 +253,7 @@ def app():
             "USERS_FETCHER": lambda: users,
             "USER_UPSERTER": upsert_user_record,
             "USER_DELETER": delete_user_record,
+            "LOGS_FETCHER": lambda: logs,
             "LOGS_FOR_USER_FETCHER": fetch_logs_for_username,
             "LOG_INSERTER": lambda username, client, tc, path, lane: inserted_logs.append(
                 {
@@ -234,5 +276,27 @@ def app():
 @pytest.fixture
 def client(app):
     return app.test_client()
+
+
+def pass_headers(app, email: str) -> dict:
+    """An FS Sprint pass for `email`, signed with the app's secret (the routes re-check the user row)."""
+    token, _ = issue_pass(app.config["AUTH_SECRET"], email, 600, app.config["CLOCK"]())
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def admin_client(app):
+    """A test client whose every call carries an admin pass (user and version writes need one)."""
+    client = app.test_client()
+    client.environ_base["HTTP_AUTHORIZATION"] = pass_headers(app, ADMIN_ROW["email"])["Authorization"]
+    return client
+
+
+@pytest.fixture
+def user_client(app):
+    """A test client whose every call carries the non-admin tester's pass."""
+    client = app.test_client()
+    client.environ_base["HTTP_AUTHORIZATION"] = pass_headers(app, "tester@example.com")["Authorization"]
+    return client
 
 

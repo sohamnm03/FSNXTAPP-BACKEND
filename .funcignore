@@ -1,0 +1,14 @@
+.git*
+.vscode
+.venv*
+.deploy-venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.env
+local.settings.json
+tests/
+local_runner.py
+deploy.ps1
+*.md

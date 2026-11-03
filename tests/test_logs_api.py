@@ -10,8 +10,9 @@ VALID_LOG = {
 }
 
 
-def test_get_logs_returns_all_logs_for_admin(client):
-    response = client.get("/api/logs?username=admin")
+def test_get_logs_returns_all_logs_for_admin(admin_client):
+    # Fix round 1 (I4): GET /api/logs needs a pass; an admin pass gets every log.
+    response = admin_client.get("/api/logs")
 
     assert response.status_code == 200
     assert response.get_json() == {
@@ -39,8 +40,9 @@ def test_get_logs_returns_all_logs_for_admin(client):
     }
 
 
-def test_get_logs_returns_only_matching_logs_for_non_admin(client):
-    response = client.get("/api/logs?username=tester")
+def test_get_logs_returns_only_matching_logs_for_non_admin(user_client):
+    # The username comes from the pass; asking for the admin's name changes nothing.
+    response = user_client.get("/api/logs?username=admin")
 
     assert response.status_code == 200
     assert response.get_json() == {
@@ -59,19 +61,19 @@ def test_get_logs_returns_only_matching_logs_for_non_admin(client):
     }
 
 
-def test_get_logs_requires_known_username(client):
-    assert client.get("/api/logs").status_code == 400
-    assert client.get("/api/logs?username=").status_code == 400
-    assert client.get("/api/logs?username=missing").status_code == 404
+def test_get_logs_requires_a_pass(client):
+    assert client.get("/api/logs").status_code == 401
+    assert client.get("/api/logs?username=admin").status_code == 401
+    assert client.get("/api/logs?username=tester", headers={"Authorization": "Bearer nonsense"}).status_code == 401
 
 
-def test_get_logs_handles_database_error(client, app):
+def test_get_logs_handles_database_error(user_client, app):
     def unavailable(_username):
         raise mysql.connector.Error("database unavailable")
 
     app.config["LOGS_FOR_USER_FETCHER"] = unavailable
 
-    response = client.get("/api/logs?username=tester")
+    response = user_client.get("/api/logs")
 
     assert response.status_code == 503
 

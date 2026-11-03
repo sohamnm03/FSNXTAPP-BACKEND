@@ -149,7 +149,8 @@ def test_version_range_comparison_is_inclusive():
     ) is False
 
 
-def test_versions_endpoint_fetches_and_updates_only_existing_rows(client):
+def test_versions_endpoint_fetches_and_updates_only_existing_rows(admin_client):
+    client = admin_client  # user and version writes need an admin pass
     response = client.get("/api/versions")
 
     assert response.status_code == 200
@@ -175,7 +176,8 @@ def test_versions_endpoint_fetches_and_updates_only_existing_rows(client):
     }
 
 
-def test_update_version_endpoint_validates_payload(client):
+def test_update_version_endpoint_validates_payload(admin_client):
+    client = admin_client  # user and version writes need an admin pass
     assert client.post("/api/versions", json=[]).status_code == 400
     assert client.post(
         "/api/versions",
@@ -194,7 +196,8 @@ def test_update_version_endpoint_validates_payload(client):
     }
 
 
-def test_update_version_endpoint_does_not_create_a_missing_row(client, app):
+def test_update_version_endpoint_does_not_create_a_missing_row(admin_client, app):
+    client = admin_client  # user and version writes need an admin pass
     app.config["VERSION_FETCHER"] = lambda: None
     app.config["VERSION_UPDATER"] = lambda version_from, version_to: False
 
@@ -337,7 +340,8 @@ def test_login_accepts_password_hash(app):
     assert body["user"]["isAdmin"] == 1
 
 
-def test_upsert_user_creates_new_user(client, app):
+def test_upsert_user_creates_new_user(admin_client, app):
+    client = admin_client  # user and version writes need an admin pass
     assert client.post("/api/users", json=[]).status_code == 400
     assert client.post("/api/users", json={}).status_code == 400
     assert client.post(
@@ -386,6 +390,7 @@ def test_upsert_user_creates_new_user(client, app):
             "isFsNxt": False,
             "isSapFsNxt": False,
             "isDataMigration": False,
+            "isMobile": "yes",
             "isDeploy": False,
         },
     ).status_code == 400
@@ -430,7 +435,8 @@ def test_upsert_user_creates_new_user(client, app):
     assert app.config["UPSERTED_USERS"][0] == body["user"]
 
 
-def test_upsert_user_updates_existing_email_and_accepts_database_flags(client):
+def test_upsert_user_updates_existing_email_and_accepts_database_flags(admin_client):
+    client = admin_client  # user and version writes need an admin pass
     response = client.post(
         "/api/users",
         json={
@@ -617,7 +623,8 @@ def test_database_upsert_inserts_mobile_and_deploy_flags_for_new_user(monkeypatc
     )
 
 
-def test_upsert_user_accepts_full_name_camel_case(client, app):
+def test_upsert_user_accepts_full_name_camel_case(admin_client, app):
+    client = admin_client  # user and version writes need an admin pass
     response = client.post(
         "/api/users",
         json={
@@ -640,7 +647,8 @@ def test_upsert_user_accepts_full_name_camel_case(client, app):
     assert app.config["UPSERTED_USERS"][0]["full_name"] == "New User"
 
 
-def test_upsert_user_handles_database_conflict(client, app):
+def test_upsert_user_handles_database_conflict(admin_client, app):
+    client = admin_client  # user and version writes need an admin pass
     def duplicate_user(*args):
         raise mysql.connector.IntegrityError("duplicate")
 
@@ -667,7 +675,8 @@ def test_upsert_user_handles_database_conflict(client, app):
     assert response.status_code == 409
 
 
-def test_upsert_user_handles_database_error(client, app):
+def test_upsert_user_handles_database_error(admin_client, app):
+    client = admin_client  # user and version writes need an admin pass
     def unavailable(*args):
         raise mysql.connector.Error("database unavailable")
 
@@ -694,7 +703,8 @@ def test_upsert_user_handles_database_error(client, app):
     assert response.status_code == 503
 
 
-def test_delete_user_by_email(client, app):
+def test_delete_user_by_email(admin_client, app):
+    client = admin_client  # user and version writes need an admin pass
     assert client.delete("/api/users", json=[]).status_code == 400
     assert client.delete("/api/users", json={}).status_code == 400
     assert client.delete("/api/users", json={"email": 123}).status_code == 400
@@ -716,7 +726,8 @@ def test_delete_user_by_email(client, app):
     assert client.get("/api/users").get_json()["users"] == []
 
 
-def test_delete_user_returns_not_found(client):
+def test_delete_user_returns_not_found(admin_client):
+    client = admin_client  # user and version writes need an admin pass
     response = client.delete(
         "/api/users", json={"email": "missing@example.com"}
     )
@@ -728,7 +739,8 @@ def test_delete_user_returns_not_found(client):
     }
 
 
-def test_delete_user_handles_database_conflict(client, app):
+def test_delete_user_handles_database_conflict(admin_client, app):
+    client = admin_client  # user and version writes need an admin pass
     def conflict(email):
         raise mysql.connector.IntegrityError("user is referenced")
 
@@ -742,7 +754,8 @@ def test_delete_user_handles_database_conflict(client, app):
     assert response.get_json()["success"] is False
 
 
-def test_delete_user_handles_database_error(client, app):
+def test_delete_user_handles_database_error(admin_client, app):
+    client = admin_client  # user and version writes need an admin pass
     def unavailable(email):
         raise mysql.connector.Error("database unavailable")
 
@@ -824,7 +837,8 @@ def test_get_users(client):
                 "isDataMigration": 1,
                 "isMobile": 1,
                 "isDeploy": 1,
-                "modules": [],
+                "isAdmin": 0,
+                    "modules": [],
                 "created_at": "2026-09-09T10:30:00",
                 "updated_at": "2026-09-09T11:45:00",
             }
